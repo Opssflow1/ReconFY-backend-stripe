@@ -26,12 +26,10 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 });
 
 
-const allowedOrigins = [
-  "*"
-];
 
+const allowedOrigin = process.env.FRONTEND_URL || "http://localhost:3001";
 app.use(cors({
-  origin: allowedOrigins,
+  origin: allowedOrigin,
   credentials: true
 }));
 
