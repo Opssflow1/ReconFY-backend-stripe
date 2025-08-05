@@ -25,13 +25,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16"
 });
 
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://localhost:3001',
-  'https://www.opss.com',
-  'https://admin.opss.com',
-  'https://main.d2xm7kiyprnd2t.amplifyapp.com'
 
+const allowedOrigins = [
+  "*"
 ];
 
 app.use(cors({
