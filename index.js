@@ -29,7 +29,9 @@ const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
   'https://www.opss.com',
-  'https://admin.opss.com'
+  'https://admin.opss.com',
+  'https://main.d2xm7kiyprnd2t.amplifyapp.com'
+
 ];
 
 app.use(cors({
