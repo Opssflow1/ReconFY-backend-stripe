@@ -32,7 +32,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 const allowedOrigins = [
   process.env.FRONTEND_URL?.trim(),
   "http://localhost:3001",
-  "http://localhost:3000"
+  "http://localhost:3000",
+  "https://main.d2ukbtk1dng1se.amplifyapp.com",
+  "https://main.d2899pnyi792jc.amplifyapp.com"
 ].filter(Boolean);
 
 app.use(cors({

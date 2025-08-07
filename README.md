@@ -2,6 +2,13 @@
 
 This is a minimal Express backend for Stripe-powered SaaS subscriptions, ready to deploy on Render or similar platforms.
 
+## Allowed Origins
+- http://localhost:3000 (development)
+- http://localhost:3001 (development)
+- https://www.opss.com
+- https://admin.opss.com
+- https://main.d2ukbtk1dng1se.amplifyapp.com
+- https://main.d2899pnyi792jc.amplifyapp.com
 ## Features
 - Create Stripe Checkout sessions for subscriptions
 - Stripe webhook endpoint for subscription events
