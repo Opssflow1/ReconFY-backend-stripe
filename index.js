@@ -6,6 +6,8 @@ import Stripe from "stripe";
 import cors from "cors";
 import dotenv from "dotenv";
 import admin from "firebase-admin";
+import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
+import ImmutableAuditLogger from "./auditLogger.js";
 
 // Load environment variables
 dotenv.config();
@@ -19,10 +21,21 @@ admin.initializeApp({
 
 const db = admin.database();
 
+// Initialize audit logger with database instance
+const auditLogger = new ImmutableAuditLogger(db);
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2023-10-16"
+});
+
+// Initialize Cognito client with credentials
+const cognitoClient = new CognitoIdentityProviderClient({
+  region: process.env.COGNITO_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
 });
 
 
@@ -367,6 +380,167 @@ app.post("/reactivate-subscription", cognitoAuthenticate, async (req, res) => {
   }
 });
 
+// -----------------------------
+// Analytics Endpoints (Single Heading: analytics/{userId}/{analyticsId})
+// -----------------------------
+
+// Create analytics record for current user
+app.post('/analytics', cognitoAuthenticate, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const {
+      analysisType,
+      profitData,
+      calculationResults,
+      missingRebates,
+      totalProfit,
+      totalRevenue,
+      filesProcessed,
+      metadata
+    } = req.body || {};
+
+    const analyticsId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const nowIso = new Date().toISOString();
+
+    const record = {
+      id: analyticsId,
+      userId,
+      analysisType: analysisType || 'profit_calculation',
+      profitData: profitData || {},
+      calculationResults: calculationResults || {},
+      missingRebates: missingRebates || {},
+      totalProfit: typeof totalProfit === 'number' ? totalProfit : null,
+      totalRevenue: typeof totalRevenue === 'number' ? totalRevenue : null,
+      filesProcessed: typeof filesProcessed === 'number' ? filesProcessed : null,
+      metadata: {
+        ...(metadata || {}),
+        calculationTimestamp: nowIso,
+        source: (metadata && metadata.source) || 'backend'
+      },
+      analysisDate: nowIso,
+      createdAt: nowIso
+    };
+
+    await db.ref(`analytics/${userId}/${analyticsId}`).set(record);
+    return res.json(record);
+  } catch (err) {
+    console.error('[DEBUG] Error creating analytics:', err);
+    return res.status(500).json({ error: 'Failed to create analytics' });
+  }
+});
+
+// Get current user's analytics list (sorted desc by createdAt)
+app.get('/analytics', cognitoAuthenticate, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const snap = await db.ref(`analytics/${userId}`).once('value');
+    if (!snap.exists()) return res.json([]);
+    const rows = Object.values(snap.val()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return res.json(rows);
+  } catch (err) {
+    console.error('[DEBUG] Error fetching analytics:', err);
+    return res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+});
+
+// Delete all analytics for current user
+app.delete('/analytics', cognitoAuthenticate, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    await db.ref(`analytics/${userId}`).remove();
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[DEBUG] Error deleting analytics:', err);
+    return res.status(500).json({ error: 'Failed to delete analytics' });
+  }
+});
+
+// Admin: get analytics for specific user
+app.get('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: 'Forbidden: Admins only' });
+  }
+  try {
+    const { userId } = req.params;
+    const snap = await db.ref(`analytics/${userId}`).once('value');
+    if (!snap.exists()) return res.json([]);
+    const rows = Object.values(snap.val()).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    return res.json(rows);
+  } catch (err) {
+    console.error('[DEBUG] Error fetching user analytics (admin):', err);
+    return res.status(500).json({ error: 'Failed to fetch user analytics' });
+  }
+});
+
+// Admin: delete all analytics for specific user
+app.delete('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: 'Forbidden: Admins only' });
+  }
+  try {
+    const { userId } = req.params;
+    
+    // Fetch user data for audit logging
+    const userDataSnap = await db.ref(`users/${userId}`).once('value');
+    const userData = userDataSnap.val();
+    
+    await db.ref(`analytics/${userId}`).remove();
+    
+    // Log the successful analytics deletion
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'USER_ANALYTICS_DELETED',
+        category: 'DATA_MANAGEMENT'
+      },
+      { id: userId, email: userData?.email },
+      {
+        before: null,
+        after: null,
+        changes: ['analytics_deleted']
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now()),
+        deleteOperation: true
+      }
+    );
+    
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[DEBUG] Error deleting user analytics (admin):', err);
+    
+    // Log the failed analytics deletion
+    try {
+      await auditLogger.createFailedAuditLog(
+        req.user,
+        {
+          type: 'USER_ANALYTICS_DELETE_FAILED',
+          category: 'DATA_MANAGEMENT'
+        },
+        { id: userId, email: userData?.email },
+        err,
+        {
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          sessionId: req.headers['x-session-id'] || 'unknown',
+          mfaUsed: req.user.mfaUsed || false,
+          sessionDuration: Date.now() - (req.user.sessionStart || Date.now())
+        }
+      );
+    } catch (auditError) {
+      console.error("Failed to log audit entry:", auditError);
+    }
+    
+    return res.status(500).json({ error: 'Failed to delete user analytics' });
+  }
+});
+
 // Admin: Update user subscription
 app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
@@ -377,6 +551,13 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
   const { userId } = req.params;
   const updates = req.body;
   try {
+    // Fetch user data first for audit logging
+    const userDataSnap = await db.ref(`users/${userId}`).once('value');
+    const userData = userDataSnap.val();
+    if (!userData) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     // If company is present in updates, update root-level company field
     if (typeof updates.company === 'string') {
       await db.ref(`users/${userId}/company`).set(updates.company);
@@ -430,8 +611,11 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
 
     // Only update DB directly for cancelAtPeriodEnd or status changes, not for plan/tier changes
     let dbUpdate = {};
+    let changes = [];
+    
     if (typeof updates.cancelAtPeriodEnd === 'boolean' && updates.cancelAtPeriodEnd !== subscription.cancelAtPeriodEnd) {
       dbUpdate.cancelAtPeriodEnd = updates.cancelAtPeriodEnd;
+      changes.push('cancelAtPeriodEnd');
     }
     if (updates.subscriptionStatus && updates.subscriptionStatus !== subscription.status) {
       dbUpdate.status = updates.subscriptionStatus;
@@ -440,7 +624,16 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
       } else if (updates.subscriptionStatus === 'ACTIVE') {
         dbUpdate.isActive = true;
       }
+      changes.push('subscriptionStatus');
     }
+    
+    // Track tier changes even though they're handled by Stripe webhook
+    if (updates.subscriptionTier && updates.subscriptionTier !== subscription.tier) {
+      changes.push('tier');
+      // Add tier change info to the changes array for better tracking
+      changes.push(`tier:${subscription.tier}->${updates.subscriptionTier}`);
+    }
+    
     if (Object.keys(dbUpdate).length > 0) {
       await updateUserSubscription(userId, {
         ...dbUpdate,
@@ -449,10 +642,243 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
       });
     }
 
+    // Log the successful admin action
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'USER_SUBSCRIPTION_UPDATED',
+        category: 'USER_MANAGEMENT'
+      },
+      { id: userId, email: userData?.email },
+      {
+        before: subscription,
+        after: { ...subscription, ...dbUpdate },
+        changes: changes
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now())
+      }
+    );
+
     res.json({ success: true, message: `Subscription updated successfully${stripeChanged ? ' (Stripe synced)' : ''}. Note: Plan/tier changes will reflect after Stripe webhook confirmation.` });
   } catch (err) {
     console.error("Error updating user subscription:", err);
+    
+    // Log the failed admin action
+    try {
+      await auditLogger.createFailedAuditLog(
+        req.user,
+        {
+          type: 'USER_SUBSCRIPTION_UPDATE_FAILED',
+          category: 'USER_MANAGEMENT'
+        },
+        { id: userId, email: userData?.email },
+        err,
+        {
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          sessionId: req.headers['x-session-id'] || 'unknown',
+          mfaUsed: req.user.mfaUsed || false,
+          sessionDuration: Date.now() - (req.user.sessionStart || Date.now())
+        }
+      );
+    } catch (auditError) {
+      console.error("Failed to log audit entry:", auditError);
+    }
+    
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Delete user completely (Firebase, Stripe, Cognito)
+app.delete('/admin/users/:userId', cognitoAuthenticate, async (req, res) => {
+  // Admin group check (Cognito 'Admins' group)
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+
+  const { userId } = req.params;
+  console.log('[ADMIN] User deletion requested', { userId, adminUser: req.user.sub });
+
+  try {
+    // Step 1: Get user data from Firebase
+    const userSnap = await db.ref(`users/${userId}`).once('value');
+    const userData = userSnap.val();
+    
+    if (!userData) {
+      return res.status(404).json({ error: "User not found in database" });
+    }
+
+    console.log('[ADMIN] User data retrieved', { userId, email: userData.email, stripeCustomerId: userData.subscription?.stripeCustomerId });
+
+    // Step 2: Delete from Stripe (if customer exists)
+    let stripeDeleted = false;
+    if (userData.subscription?.stripeCustomerId) {
+      try {
+        // Cancel all subscriptions first
+        const subscriptions = await stripe.subscriptions.list({
+          customer: userData.subscription.stripeCustomerId,
+          limit: 100
+        });
+        
+        for (const subscription of subscriptions.data) {
+          await stripe.subscriptions.cancel(subscription.id);
+          console.log('[ADMIN] Stripe subscription cancelled', { subscriptionId: subscription.id });
+        }
+
+        // Delete the customer
+        await stripe.customers.del(userData.subscription.stripeCustomerId);
+        stripeDeleted = true;
+        console.log('[ADMIN] Stripe customer deleted', { customerId: userData.subscription.stripeCustomerId });
+      } catch (stripeError) {
+        console.error('[ADMIN] Stripe deletion error', { error: stripeError.message, customerId: userData.subscription.stripeCustomerId });
+        // Continue with other deletions even if Stripe fails
+      }
+    }
+
+    // Step 3: Delete from Cognito (if email exists)
+    let cognitoDeleted = false;
+    if (userData.email) {
+      try {
+        const deleteUserCommand = new AdminDeleteUserCommand({
+          UserPoolId: process.env.COGNITO_USER_POOL_ID,
+          Username: userData.email
+        });
+        
+        await cognitoClient.send(deleteUserCommand);
+        cognitoDeleted = true;
+        console.log('[ADMIN] Cognito user deleted', { email: userData.email });
+      } catch (cognitoError) {
+        console.error('[ADMIN] Cognito deletion error', { error: cognitoError.message, email: userData.email });
+        // Continue with other deletions even if Cognito fails
+      }
+    }
+
+    // Step 4: Delete from Firebase (user data and analytics)
+    try {
+      // Delete user analytics
+      await db.ref(`analytics/${userId}`).remove();
+      console.log('[ADMIN] User analytics deleted', { userId });
+
+      // Delete user profile and subscription
+      await db.ref(`users/${userId}`).remove();
+      console.log('[ADMIN] User profile deleted', { userId });
+    } catch (firebaseError) {
+      console.error('[ADMIN] Firebase deletion error', { error: firebaseError.message, userId });
+      throw firebaseError; // Re-throw Firebase errors as they're critical
+    }
+
+    // Step 5: Log the deletion
+    console.log('[ADMIN] User deletion completed', {
+      userId,
+      email: userData.email,
+      stripeDeleted,
+      cognitoDeleted,
+      adminUser: req.user.sub,
+      timestamp: new Date().toISOString()
+    });
+
+    // Log the successful user deletion
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'USER_DELETED',
+        category: 'USER_MANAGEMENT'
+      },
+      { id: userId, email: userData.email },
+      {
+        before: userData,
+        after: null,
+        changes: ['user_deleted', 'stripe_deleted', 'cognito_deleted', 'analytics_deleted']
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now()),
+        userDeletion: true,
+        deleteOperation: true,
+        sensitiveData: true
+      }
+    );
+
+    res.json({
+      success: true,
+      message: "User deleted successfully",
+      details: {
+        userId,
+        email: userData.email,
+        stripeDeleted,
+        cognitoDeleted,
+        firebaseDeleted: true
+      }
+    });
+
+  } catch (error) {
+    console.error('[ADMIN] User deletion failed', { error: error.message, userId });
+    res.status(500).json({
+      error: "Failed to delete user",
+      message: error.message,
+      userId
+    });
+  }
+});
+
+// Admin: Get audit logs
+app.get('/admin/audit-logs', cognitoAuthenticate, async (req, res) => {
+  // Admin group check (Cognito 'Admins' group)
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+
+  try {
+    const filters = {
+      adminUser: req.query.adminUser,
+      action: req.query.action,
+      dateRange: req.query.dateRange || '7d'
+    };
+
+    const auditLogs = await auditLogger.getAuditLogs(filters);
+    
+    res.json({
+      success: true,
+      logs: auditLogs,
+      total: auditLogs.length,
+      filters: filters
+    });
+  } catch (error) {
+    console.error('[AUDIT] Failed to get audit logs:', error);
+    res.status(500).json({ error: 'Failed to retrieve audit logs' });
+  }
+});
+
+// Admin: Verify audit log integrity
+app.get('/admin/audit-logs/:logId/verify', cognitoAuthenticate, async (req, res) => {
+  // Admin group check (Cognito 'Admins' group)
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+
+  try {
+    const { logId } = req.params;
+    const isIntegrityValid = await auditLogger.verifyLogIntegrity(logId);
+    
+    res.json({
+      success: true,
+      logId: logId,
+      integrityValid: isIntegrityValid
+    });
+  } catch (error) {
+    console.error('[AUDIT] Failed to verify log integrity:', error);
+    res.status(500).json({ error: 'Failed to verify log integrity' });
   }
 });
 
@@ -512,12 +938,12 @@ app.post("/webhook", async (req, res) => {
         if (invoice.subscription) {
           const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
           const customer = await stripe.customers.retrieve(invoice.customer);
-          // Find user by customer ID
+          // Find user by customer ID (only check subscription.stripeCustomerId)
           const usersSnapshot = await db.ref('users').once('value');
           let userId = null;
           usersSnapshot.forEach(childSnapshot => {
             const userData = childSnapshot.val();
-            if (userData.stripeCustomerId === customer.id) {
+            if (userData.subscription?.stripeCustomerId === customer.id) {
               userId = childSnapshot.key;
             }
           });
@@ -539,12 +965,12 @@ app.post("/webhook", async (req, res) => {
         const deletedSubscription = event.data.object;
         console.log('[DEBUG] Webhook: customer.subscription.deleted', { deletedSubscription });
         const deletedCustomer = await stripe.customers.retrieve(deletedSubscription.customer);
-        // Find user by customer ID
+        // Find user by customer ID (only check subscription.stripeCustomerId)
         const deletedUsersSnapshot = await db.ref('users').once('value');
         let deletedUserId = null;
         deletedUsersSnapshot.forEach(childSnapshot => {
           const userData = childSnapshot.val();
-          if (userData.stripeCustomerId === deletedCustomer.id) {
+          if (userData.subscription?.stripeCustomerId === deletedCustomer.id) {
             deletedUserId = childSnapshot.key;
           }
         });
@@ -574,13 +1000,12 @@ app.post("/webhook", async (req, res) => {
           updatedSubscription = await stripe.subscriptions.retrieve(updatedSubscription.id);
         }
 
-        // Find user by customer ID (check both stripeCustomerId and subscription.stripeCustomerId)
+        // Find user by customer ID (only check subscription.stripeCustomerId)
         const updatedUsersSnapshot = await db.ref('users').once('value');
         let updatedUserId = null;
         updatedUsersSnapshot.forEach(childSnapshot => {
           const userData = childSnapshot.val();
-          if (userData.stripeCustomerId === updatedCustomer.id || 
-              userData.subscription?.stripeCustomerId === updatedCustomer.id) {
+          if (userData.subscription?.stripeCustomerId === updatedCustomer.id) {
             updatedUserId = childSnapshot.key;
           }
         });
@@ -648,6 +1073,6 @@ const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`OpssFlow Backend running on port ${PORT}`);
   console.log(`Stripe webhooks endpoint: /webhook`);
-  console.log(`Admin endpoints: /admin/users, /admin/users/:userId/subscription`);
+  console.log(`Admin endpoints: /admin/users, /admin/users/:userId/subscription, /admin/users/:userId (DELETE), /admin/audit-logs`);
   console.log(`Reactivation endpoint: /reactivate-subscription`);
 });
