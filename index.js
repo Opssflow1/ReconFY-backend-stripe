@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import admin from "firebase-admin";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import ImmutableAuditLogger from "./auditLogger.js";
+import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
 
 // Load environment variables
 dotenv.config();
@@ -23,6 +24,124 @@ const db = admin.database();
 
 // Initialize audit logger with database instance
 const auditLogger = new ImmutableAuditLogger(db);
+
+// Initialize AWS SES for email functionality
+const sesClient = new SESClient({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  }
+});
+
+// Email templates
+const EMAIL_TEMPLATES = {
+  INQUIRY_RECEIVED: {
+    subject: "Your inquiry has been received - ReconFY Support",
+    body: (ticketNumber, customerName) => `
+Dear ${customerName},
+
+Thank you for contacting ReconFY Support. We have received your inquiry and our team will review it shortly.
+
+Ticket Number: ${ticketNumber}
+Status: New
+
+We typically respond within 24 hours during business days. If you have any urgent concerns, please fllow up by ticket number on the ReconFY Support Portal..
+
+Best regards,
+ReconFY Support Team
+    `.trim()
+  },
+  
+  STATUS_UPDATE: {
+    subject: "Your inquiry status has been updated - ReconFY Support",
+    body: (ticketNumber, customerName, status, adminResponse) => `
+Dear ${customerName},
+
+Your inquiry status has been updated:
+
+Ticket Number: ${ticketNumber}
+New Status: ${status}
+
+${adminResponse ? `Response from our team:\n${adminResponse}\n` : ''}
+
+Kindly track your request by ticket number on the ReconFY Support Portal.
+
+Best regards,
+ReconFY Support Team
+    `.trim()
+  },
+  
+  INQUIRY_RESOLVED: {
+    subject: "Your inquiry has been resolved - ReconFY Support",
+    body: (ticketNumber, customerName, resolution) => `
+Dear ${customerName},
+
+Great news! Your inquiry has been resolved:
+
+Ticket Number: ${ticketNumber}
+Status: Resolved
+
+${resolution ? `Resolution:\n${resolution}\n` : ''}
+
+Thank you for choosing ReconFY!
+
+Best regards,
+ReconFY Support Team
+    `.trim()
+  }
+};
+
+// Helper function to filter out undefined values from objects
+function filterUndefined(obj) {
+  const filtered = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
+// Helper function to send emails
+async function sendEmail(toEmail, subject, body, fromEmail = null) {
+  try {
+    const fromAddress = fromEmail || process.env.SES_FROM_EMAIL || 'noreply@opssflow.com';
+    
+    const command = new SendEmailCommand({
+      Source: fromAddress,
+      Destination: {
+        ToAddresses: [toEmail],
+      },
+      Message: {
+        Subject: {
+          Data: subject,
+          Charset: 'UTF-8',
+        },
+        Body: {
+          Text: {
+            Data: body,
+            Charset: 'UTF-8',
+          },
+        },
+      },
+    });
+
+    const result = await sesClient.send(command);
+    console.log('Email sent successfully:', result.MessageId);
+    return result;
+  } catch (error) {
+    console.error('Error sending email:', error);
+    throw error;
+  }
+}
+
+// Generate unique ticket number
+function generateTicketNumber() {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `TKT-${timestamp}-${random}`.toUpperCase();
+}
 
 const app = express();
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
@@ -292,7 +411,11 @@ app.get("/admin/users", cognitoAuthenticate, async (req, res) => {
         subscription: val.subscription || null,
         email: val.email || null,
         name: val.name || null,
-        company: val.company || null 
+        company: val.company || null,
+        // NEW: Legal acceptance data
+        legalAcceptance: val.legalAcceptance || null,
+        createdAt: val.createdAt || null,
+        updatedAt: val.updatedAt || null
       });
     });
     res.json({ users });
@@ -559,8 +682,9 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
     }
 
     // If company is present in updates, update root-level company field
+    // Using update() instead of set() to preserve existing user data structure
     if (typeof updates.company === 'string') {
-      await db.ref(`users/${userId}/company`).set(updates.company);
+      await db.ref(`users/${userId}`).update({ company: updates.company });
     }
 
     // Fetch current subscription from DB
@@ -928,6 +1052,47 @@ app.post("/webhook", async (req, res) => {
               currency: subscription.items.data[0].price.currency.toUpperCase(),
             }
           });
+          
+          // Log subscription activation for audit purposes
+          try {
+            const userData = await db.ref(`users/${session.metadata.userId}`).once('value');
+            const user = userData.val();
+            if (user) {
+              await auditLogger.createAuditLog(
+                { sub: 'SYSTEM', email: 'system@opssflow.com' }, // System identifier for automated actions
+                {
+                  type: 'SUBSCRIPTION_ACTIVATED',
+                  category: 'LEGAL_COMPLIANCE'
+                },
+                {
+                  id: user.id,
+                  email: user.email,
+                  type: 'LEGAL_ACCEPTANCE',
+                  company: user.company,
+                  termsVersion: user.legalAcceptance?.termsOfService?.version || '1.0.0',
+                  privacyVersion: user.legalAcceptance?.privacyPolicy?.version || '1.0.0',
+                  acceptedAt: user.legalAcceptance?.termsOfService?.acceptedAt || 'unknown',
+                  ipAddress: user.legalAcceptance?.termsOfService?.ipAddress || 'unknown',
+                  userAgent: user.legalAcceptance?.termsOfService?.userAgent || 'unknown'
+                },
+                {
+                  before: { subscriptionStatus: 'TRIAL' },
+                  after: { subscriptionStatus: 'ACTIVE', tier: session.mode },
+                  changes: ['subscription_activation', 'plan_upgrade']
+                },
+                {
+                  ipAddress: 'webhook',
+                  userAgent: 'stripe-webhook',
+                  sessionId: session.id,
+                  legalAction: true,
+                  gdprConsent: true
+                }
+              );
+            }
+          } catch (auditError) {
+            console.error('[AUDIT] Failed to log subscription activation', { error: auditError.message, userId: session.metadata.userId });
+          }
+          
           console.log('[DEBUG] Webhook: User subscription updated in DB', { userId: session.metadata.userId });
         }
         break;
@@ -1069,10 +1234,816 @@ app.post("/webhook", async (req, res) => {
   res.json({ received: true });
 });
 
+// Enhanced Contact form submission endpoint
+app.post("/contact", async (req, res) => {
+  try {
+    const { firstName, lastName, email, company, message, category = 'GENERAL' } = req.body;
+    
+    // Validate required fields
+    if (!firstName || !lastName || !email || !message) {
+      return res.status(400).json({ error: "All required fields must be provided" });
+    }
+    
+    // Generate ticket number
+    const ticketNumber = generateTicketNumber();
+    
+    // Create contact inquiry record
+    const contactId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const contactData = {
+      id: contactId,
+      ticketNumber,
+      firstName,
+      lastName,
+      email,
+      company: company || null,
+      message,
+      category: category || 'GENERAL',
+      status: 'NEW',
+      priority: 'MEDIUM',
+      source: 'WEBSITE',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      responses: [], // Array to store admin responses
+      customerReplies: [], // Array to store customer replies
+      assignedTo: null,
+      adminNotes: null,
+      metadata: {
+        userAgent: req.headers['user-agent'],
+        ipAddress: req.ip,
+        referrer: req.headers.referer || 'direct'
+      }
+    };
+    
+    // Store in Firebase
+    await db.ref(`contactInquiries/${contactId}`).set(contactData);
+    
+    // Send confirmation email to customer
+    try {
+      console.log('Attempting to send confirmation email:', {
+        email,
+        ticketNumber,
+        firstName,
+        sendEmailFunctionAvailable: typeof sendEmail === 'function'
+      });
+      
+      // Check if sendEmail function is available
+      if (typeof sendEmail === 'function') {
+        console.log('Sending confirmation email via sendEmail function...');
+        const emailResult = await sendEmail(
+          email,
+          EMAIL_TEMPLATES.INQUIRY_RECEIVED.subject,
+          EMAIL_TEMPLATES.INQUIRY_RECEIVED.body(ticketNumber, firstName)
+        );
+        console.log('Confirmation email sent successfully:', emailResult);
+      } else {
+        console.error('sendEmail function is not available - this should not happen!');
+      }
+    } catch (emailError) {
+      console.error('Failed to send confirmation email:', emailError);
+      // Don't fail the request if email fails
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "Contact inquiry submitted successfully",
+      contactId,
+      ticketNumber
+    });
+    
+  } catch (error) {
+    console.error("Error submitting contact form:", error);
+    res.status(500).json({ error: "Failed to submit contact form" });
+  }
+});
+
+// Admin: Get all contact inquiries with enhanced filters
+app.get("/admin/contact-inquiries", cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const { status, priority, category, dateRange, assignedTo, search } = req.query;
+    const inquiriesSnapshot = await db.ref('contactInquiries').once('value');
+    let inquiries = [];
+    
+    if (inquiriesSnapshot.exists()) {
+      inquiriesSnapshot.forEach(childSnapshot => {
+        inquiries.push({
+          id: childSnapshot.key,
+          ...childSnapshot.val()
+        });
+      });
+    }
+    
+    // Apply filters
+    if (status && status !== 'ALL') {
+      inquiries = inquiries.filter(inq => inq.status === status);
+    }
+    if (priority && priority !== 'ALL') {
+      inquiries = inquiries.filter(inq => inq.priority === priority);
+    }
+    if (category && category !== 'ALL') {
+      inquiries = inquiries.filter(inq => inq.category === category);
+    }
+    if (assignedTo && assignedTo !== 'ALL') {
+      inquiries = inquiries.filter(inq => inq.assignedTo === assignedTo);
+    }
+    if (dateRange && dateRange !== 'ALL') {
+      const cutoffDate = new Date();
+      if (dateRange === '7d') cutoffDate.setDate(cutoffDate.getDate() - 7);
+      else if (dateRange === '30d') cutoffDate.setDate(cutoffDate.getDate() - 30);
+      else if (dateRange === '90d') cutoffDate.setDate(cutoffDate.getDate() - 90);
+      
+      inquiries = inquiries.filter(inq => new Date(inq.createdAt) >= cutoffDate);
+    }
+    
+    // Search functionality
+    if (search) {
+      const searchLower = search.toLowerCase();
+      inquiries = inquiries.filter(inq => 
+        inq.firstName?.toLowerCase().includes(searchLower) ||
+        inq.lastName?.toLowerCase().includes(searchLower) ||
+        inq.email?.toLowerCase().includes(searchLower) ||
+        inq.company?.toLowerCase().includes(searchLower) ||
+        inq.message?.toLowerCase().includes(searchLower) ||
+        inq.ticketNumber?.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Sort by creation date (newest first)
+    inquiries.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    res.json({ inquiries });
+  } catch (error) {
+    console.error("Error fetching contact inquiries:", error);
+    res.status(500).json({ error: "Failed to fetch contact inquiries" });
+  }
+});
+
+// Admin: Update contact inquiry with response system
+app.put("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const { inquiryId } = req.params;
+    const { 
+      status, 
+      priority, 
+      adminNotes, 
+      assignedTo, 
+      response,
+      sendEmailToCustomer = true
+    } = req.body;
+    
+    // Get current inquiry data
+    const inquirySnapshot = await db.ref(`contactInquiries/${inquiryId}`).once('value');
+    if (!inquirySnapshot.exists()) {
+      return res.status(404).json({ error: "Contact inquiry not found" });
+    }
+    
+    const currentInquiry = inquirySnapshot.val();
+    const previousStatus = currentInquiry.status;
+    
+    // Build updates object, filtering out undefined values
+    const updates = {};
+    
+    if (status !== undefined) updates.status = status;
+    if (priority !== undefined) updates.priority = priority;
+    if (adminNotes !== undefined) updates.adminNotes = adminNotes;
+    if (assignedTo !== undefined) updates.assignedTo = assignedTo;
+    
+    // Always update these fields
+    updates.updatedAt = new Date().toISOString();
+    updates.lastUpdatedBy = req.user.sub;
+    
+    // Add response to responses array if provided
+    if (response) {
+      const newResponse = {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        message: response,
+        adminId: req.user.sub,
+        adminName: req.user.name || req.user.email || 'Admin',
+        timestamp: new Date().toISOString()
+      };
+      
+      const responses = currentInquiry.responses || [];
+      responses.push(newResponse);
+      updates.responses = responses;
+    }
+    
+    // Filter out any undefined values before sending to Firebase
+    const filteredUpdates = filterUndefined(updates);
+    await db.ref(`contactInquiries/${inquiryId}`).update(filteredUpdates);
+    
+    // Send email to customer if requested and status changed or response added
+    if (sendEmailToCustomer && (status !== previousStatus || response)) {
+      console.log('Attempting to send status update email:', {
+        email: currentInquiry.email,
+        ticketNumber: currentInquiry.ticketNumber,
+        statusChanged: status !== previousStatus,
+        responseAdded: !!response,
+        sendEmailFunctionAvailable: typeof sendEmail === 'function'
+      });
+      
+      try {
+        let emailSubject, emailBody;
+        
+        if (status === 'RESOLVED') {
+          emailSubject = EMAIL_TEMPLATES.INQUIRY_RESOLVED.subject;
+          emailBody = EMAIL_TEMPLATES.INQUIRY_RESOLVED.body(
+            currentInquiry.ticketNumber,
+            currentInquiry.firstName,
+            response
+          );
+        } else if (status !== previousStatus) {
+          emailSubject = EMAIL_TEMPLATES.STATUS_UPDATE.subject;
+          emailBody = EMAIL_TEMPLATES.STATUS_UPDATE.body(
+            currentInquiry.ticketNumber,
+            currentInquiry.firstName,
+            status,
+            response
+          );
+        } else if (response) {
+          emailSubject = EMAIL_TEMPLATES.STATUS_UPDATE.subject;
+          emailBody = EMAIL_TEMPLATES.STATUS_UPDATE.body(
+            currentInquiry.ticketNumber,
+            currentInquiry.firstName,
+            status,
+            response
+          );
+        }
+        
+        if (emailSubject && emailBody) {
+          // Check if sendEmail function is available
+          if (typeof sendEmail === 'function') {
+            console.log('Sending status update email via sendEmail function...');
+            const emailResult = await sendEmail(
+              currentInquiry.email,
+              emailSubject,
+              emailBody
+            );
+            console.log('Status update email sent successfully:', emailResult);
+          } else {
+            console.error('sendEmail function is not available - this should not happen!');
+          }
+        }
+      } catch (emailError) {
+        console.error('Failed to send status update email:', emailError);
+        // Don't fail the request if email fails
+      }
+    } else {
+      console.log('Status update email not sent:', {
+        sendEmailToCustomer,
+        statusChanged: status !== previousStatus,
+        responseAdded: !!response
+      });
+    }
+    
+    // Log the admin action
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'CONTACT_INQUIRY_UPDATED',
+        category: 'CUSTOMER_SUPPORT'
+      },
+      { 
+        id: inquiryId, 
+        ticketNumber: currentInquiry.ticketNumber,
+        email: currentInquiry.email,
+        firstName: currentInquiry.firstName,
+        lastName: currentInquiry.lastName,
+        company: currentInquiry.company,
+        type: 'INQUIRY'
+      },
+      {
+        before: { status: previousStatus, priority: currentInquiry.priority },
+        after: updates,
+        changes: Object.keys(updates)
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now())
+      }
+    );
+    
+    res.json({ success: true, message: "Contact inquiry updated successfully" });
+  } catch (error) {
+    console.error("Error updating contact inquiry:", error);
+    res.status(500).json({ error: "Failed to update contact inquiry" });
+  }
+});
+
+// Admin: Send response to customer
+app.post("/admin/contact-inquiries/:inquiryId/respond", cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const { inquiryId } = req.params;
+    const { response, sendEmailToCustomer = true } = req.body;
+    
+    if (!response) {
+      return res.status(400).json({ error: "Response message is required" });
+    }
+    
+    // Get current inquiry data
+    const inquirySnapshot = await db.ref(`contactInquiries/${inquiryId}`).once('value');
+    if (!inquirySnapshot.exists()) {
+      return res.status(404).json({ error: "Contact inquiry not found" });
+    }
+    
+    const currentInquiry = inquirySnapshot.val();
+    
+    // Add response to responses array
+    const newResponse = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      message: response,
+      adminId: req.user.sub,
+      adminName: req.user.name || req.user.email,
+      timestamp: new Date().toISOString()
+    };
+    
+    const responses = currentInquiry.responses || [];
+    responses.push(newResponse);
+    
+    // Update inquiry - ensure all values are defined
+    const updates = {
+      responses: responses,
+      updatedAt: new Date().toISOString(),
+      lastUpdatedBy: req.user.sub || 'unknown'
+    };
+    
+    // Filter out any undefined values before sending to Firebase
+    const filteredUpdates = filterUndefined(updates);
+    await db.ref(`contactInquiries/${inquiryId}`).update(filteredUpdates);
+    
+    // Send email to customer if requested
+    if (sendEmailToCustomer) {
+      console.log('Attempting to send email to customer:', {
+        email: currentInquiry.email,
+        ticketNumber: currentInquiry.ticketNumber,
+        sendEmailFunctionAvailable: typeof sendEmail === 'function'
+      });
+      
+      try {
+        const emailSubject = `Response to your inquiry - ${currentInquiry.ticketNumber}`;
+        const emailBody = `
+Dear ${currentInquiry.firstName},
+
+You have received a response to your inquiry:
+
+Ticket Number: ${currentInquiry.ticketNumber}
+Response from our team:
+
+${response}
+
+Kindly track your request by ticket number on the ReconFY Support Portal.
+
+Best regards,
+ReconFY Support Team
+        `.trim();
+        
+        // Check if sendEmail function is available
+        if (typeof sendEmail === 'function') {
+          console.log('Sending email via sendEmail function...');
+          const emailResult = await sendEmail(
+            currentInquiry.email,
+            emailSubject,
+            emailBody
+          );
+          console.log('Email sent successfully:', emailResult);
+        } else {
+          console.error('sendEmail function is not available - this should not happen!');
+        }
+      } catch (emailError) {
+        console.error('Failed to send response email:', emailError);
+        // Don't fail the request if email fails
+      }
+    } else {
+      console.log('Email not sent - sendEmailToCustomer is false');
+    }
+    
+    // Log the action
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'CONTACT_INQUIRY_RESPONSE_SENT',
+        category: 'CUSTOMER_SUPPORT'
+      },
+      { 
+        id: inquiryId, 
+        ticketNumber: currentInquiry.ticketNumber,
+        email: currentInquiry.email,
+        firstName: currentInquiry.firstName,
+        lastName: currentInquiry.lastName,
+        company: currentInquiry.company,
+        type: 'INQUIRY'
+      },
+      {
+        before: null,
+        after: { response: newResponse },
+        changes: ['response_sent']
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now())
+      }
+    );
+    
+    res.json({ success: true, message: "Response sent successfully" });
+  } catch (error) {
+    console.error("Error sending response:", error);
+    res.status(500).json({ error: "Failed to send response" });
+  }
+});
+
+// Admin: Get contact inquiry statistics
+app.get("/admin/contact-inquiries/stats", cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const inquiriesSnapshot = await db.ref('contactInquiries').once('value');
+    let inquiries = [];
+    
+    if (inquiriesSnapshot.exists()) {
+      inquiriesSnapshot.forEach(childSnapshot => {
+        inquiries.push(childSnapshot.val());
+      });
+    }
+    
+    // Calculate statistics
+    const stats = {
+      total: inquiries.length,
+      byStatus: {
+        NEW: inquiries.filter(inq => inq.status === 'NEW').length,
+        IN_PROGRESS: inquiries.filter(inq => inq.status === 'IN_PROGRESS').length,
+        RESOLVED: inquiries.filter(inq => inq.status === 'RESOLVED').length,
+        CLOSED: inquiries.filter(inq => inq.status === 'CLOSED').length,
+        CUSTOMER_REPLY: inquiries.filter(inq => inq.status === 'CUSTOMER_REPLY').length
+      },
+      byPriority: {
+        LOW: inquiries.filter(inq => inq.priority === 'LOW').length,
+        MEDIUM: inquiries.filter(inq => inq.priority === 'MEDIUM').length,
+        HIGH: inquiries.filter(inq => inq.priority === 'HIGH').length,
+        URGENT: inquiries.filter(inq => inq.priority === 'URGENT').length
+      },
+      byCategory: {
+        GENERAL: inquiries.filter(inq => inq.category === 'GENERAL').length,
+        TECHNICAL: inquiries.filter(inq => inq.category === 'TECHNICAL').length,
+        BILLING: inquiries.filter(inq => inq.category === 'BILLING').length,
+        FEATURE_REQUEST: inquiries.filter(inq => inq.category === 'FEATURE_REQUEST').length
+      },
+      averageResponseTime: 0, // TODO: Calculate based on first response time
+      unassigned: inquiries.filter(inq => !inq.assignedTo).length,
+      customerReplies: inquiries.reduce((total, inq) => total + (inq.customerReplies?.length || 0), 0)
+    };
+    
+    res.json({ stats });
+  } catch (error) {
+    console.error("Error fetching contact statistics:", error);
+    res.status(500).json({ error: "Failed to fetch contact statistics" });
+  }
+});
+
+// Public: Get ticket by ticket number (customer portal)
+app.get("/ticket/:ticketNumber", async (req, res) => {
+  try {
+    const { ticketNumber } = req.params;
+    
+    if (!ticketNumber) {
+      return res.status(400).json({ error: "Ticket number is required" });
+    }
+    
+    // Search for ticket in Firebase
+    const inquiriesSnapshot = await db.ref('contactInquiries').once('value');
+    let foundInquiry = null;
+    
+    if (inquiriesSnapshot.exists()) {
+      inquiriesSnapshot.forEach(childSnapshot => {
+        const inquiry = childSnapshot.val();
+        if (inquiry.ticketNumber === ticketNumber) {
+          foundInquiry = {
+            id: childSnapshot.key,
+            ...inquiry
+          };
+        }
+      });
+    }
+    
+    if (!foundInquiry) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    
+    // Return ticket details (excluding sensitive admin info)
+    const ticketData = {
+      ticketNumber: foundInquiry.ticketNumber,
+      firstName: foundInquiry.firstName,
+      lastName: foundInquiry.lastName,
+      email: foundInquiry.email,
+      company: foundInquiry.company,
+      message: foundInquiry.message,
+      category: foundInquiry.category,
+      status: foundInquiry.status,
+      priority: foundInquiry.priority,
+      createdAt: foundInquiry.createdAt,
+      updatedAt: foundInquiry.updatedAt,
+      responses: foundInquiry.responses || [],
+      customerReplies: foundInquiry.customerReplies || []
+    };
+    
+    res.json({ success: true, ticket: ticketData });
+  } catch (error) {
+    console.error("Error fetching ticket:", error);
+    res.status(500).json({ error: "Failed to fetch ticket" });
+  }
+});
+
+// Public: Customer reply to ticket
+app.post("/ticket/:ticketNumber/reply", async (req, res) => {
+  try {
+    const { ticketNumber } = req.params;
+    const { message, customerEmail, customerName } = req.body;
+    
+    if (!message || !customerEmail || !customerName) {
+      return res.status(400).json({ error: "Message, customer email, and customer name are required" });
+    }
+    
+    // Find the ticket
+    const inquiriesSnapshot = await db.ref('contactInquiries').once('value');
+    let foundInquiry = null;
+    let inquiryId = null;
+    
+    if (inquiriesSnapshot.exists()) {
+      inquiriesSnapshot.forEach(childSnapshot => {
+        const inquiry = childSnapshot.val();
+        if (inquiry.ticketNumber === ticketNumber) {
+          foundInquiry = inquiry;
+          inquiryId = childSnapshot.key;
+        }
+      });
+    }
+    
+    if (!foundInquiry) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    
+    // Check if ticket is resolved (no more replies allowed)
+    if (foundInquiry.status === 'RESOLVED') {
+      return res.status(400).json({ error: "Cannot reply to resolved ticket" });
+    }
+    
+    // Verify customer email matches ticket email
+    if (foundInquiry.email !== customerEmail) {
+      return res.status(403).json({ error: "Email does not match ticket" });
+    }
+    
+    // Create customer reply
+    const customerReply = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      message: message,
+      customerEmail: customerEmail,
+      customerName: customerName,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Add to customerReplies array
+    const customerReplies = foundInquiry.customerReplies || [];
+    customerReplies.push(customerReply);
+    
+    // Update ticket
+    const updates = {
+      customerReplies: customerReplies,
+      status: 'CUSTOMER_REPLY',
+      updatedAt: new Date().toISOString(),
+      lastCustomerReply: new Date().toISOString()
+    };
+    
+    await db.ref(`contactInquiries/${inquiryId}`).update(updates);
+    
+    // Send notification email to admins (optional)
+    try {
+      if (typeof sendEmail === 'function') {
+        const adminNotificationSubject = `Customer Reply - Ticket ${ticketNumber}`;
+        const adminNotificationBody = `
+A customer has replied to ticket ${ticketNumber}:
+
+Customer: ${customerName} (${customerEmail})
+Message: ${message}
+
+Please review and respond in the admin dashboard.
+
+Best regards,
+ReconFY System
+        `.trim();
+        
+        // Get admin emails from users collection
+        const usersSnapshot = await db.ref('users').once('value');
+        const adminEmails = [];
+        
+        if (usersSnapshot.exists()) {
+          usersSnapshot.forEach(childSnapshot => {
+            const user = childSnapshot.val();
+            if (user.role === 'admin' || user.role === 'Admin') {
+              adminEmails.push(user.email);
+            }
+          });
+        }
+        
+        // Send to each admin
+        for (const adminEmail of adminEmails) {
+          try {
+            await sendEmail(adminEmail, adminNotificationSubject, adminNotificationBody);
+          } catch (emailError) {
+            console.error(`Failed to send admin notification to ${adminEmail}:`, emailError);
+          }
+        }
+      }
+    } catch (emailError) {
+      console.error('Failed to send admin notifications:', emailError);
+      // Don't fail the request if email fails
+    }
+    
+    res.json({ 
+      success: true, 
+      message: "Reply sent successfully",
+      replyId: customerReply.id
+    });
+    
+  } catch (error) {
+    console.error("Error sending customer reply:", error);
+    res.status(500).json({ error: "Failed to send reply" });
+  }
+});
+
+// Admin: Delete contact inquiry
+app.delete("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (req, res) => {
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const { inquiryId } = req.params;
+    
+    // Fetch inquiry data for audit logging
+    const inquirySnap = await db.ref(`contactInquiries/${inquiryId}`).once('value');
+    const inquiryData = inquirySnap.val();
+    
+    if (!inquiryData) {
+      return res.status(404).json({ error: "Contact inquiry not found" });
+    }
+    
+    await db.ref(`contactInquiries/${inquiryId}`).remove();
+    
+    // Log the deletion
+    await auditLogger.createAuditLog(
+      req.user,
+      {
+        type: 'CONTACT_INQUIRY_DELETED',
+        category: 'CUSTOMER_SUPPORT'
+      },
+      { id: inquiryId, email: inquiryData.email },
+      {
+        before: inquiryData,
+        after: null,
+        changes: ['inquiry_deleted']
+      },
+      {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        sessionId: req.headers['x-session-id'] || 'unknown',
+        mfaUsed: req.user.mfaUsed || false,
+        sessionDuration: Date.now() - (req.user.sessionStart || Date.now()),
+        deleteOperation: true
+      }
+    );
+    
+    res.json({ success: true, message: "Contact inquiry deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting contact inquiry:", error);
+    res.status(500).json({ error: "Failed to delete contact inquiry" });
+  }
+});
+
+// Admin: Get legal compliance statistics
+app.get("/admin/legal-compliance", cognitoAuthenticate, async (req, res) => {
+  // Admin group check (Cognito 'Admins' group)
+  const groups = req.user["cognito:groups"] || [];
+  if (!groups.includes("Admins")) {
+    return res.status(403).json({ error: "Forbidden: Admins only" });
+  }
+  
+  try {
+    const usersSnapshot = await db.ref('users').once('value');
+    const users = [];
+    
+    usersSnapshot.forEach(childSnapshot => {
+      const val = childSnapshot.val();
+      users.push({
+        id: childSnapshot.key,
+        email: val.email || null,
+        company: val.company || null,
+        legalAcceptance: val.legalAcceptance || null,
+        createdAt: val.createdAt || null
+      });
+    });
+    
+    const stats = {
+      totalUsers: users.length,
+      termsAccepted: users.filter(u => u.legalAcceptance?.termsOfService?.accepted).length,
+      privacyAccepted: users.filter(u => u.legalAcceptance?.privacyPolicy?.accepted).length,
+      allLegalAccepted: users.filter(u => 
+        u.legalAcceptance?.termsOfService?.accepted && 
+        u.legalAcceptance?.privacyPolicy?.accepted
+      ).length,
+      pendingLegalAcceptance: users.filter(u => 
+        !u.legalAcceptance?.termsOfService?.accepted || 
+        !u.legalAcceptance?.privacyPolicy?.accepted
+      ).length,
+      complianceRate: users.length > 0 ? 
+        (users.filter(u => 
+          u.legalAcceptance?.termsOfService?.accepted && 
+          u.legalAcceptance?.privacyPolicy?.accepted
+        ).length / users.length * 100).toFixed(1) : 0,
+      lastUpdated: new Date().toISOString()
+    };
+    
+    res.json({ stats });
+  } catch (err) {
+    console.error("Error fetching legal compliance stats:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Log terms acceptance for audit purposes
+app.post("/log/terms-acceptance", async (req, res) => {
+  try {
+    const { userId, email, company, termsVersion, privacyVersion, ipAddress, userAgent } = req.body;
+    
+    if (!userId || !email) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Log terms acceptance for audit purposes
+    await auditLogger.createAuditLog(
+      { sub: 'SYSTEM', email: 'system@opssflow.com' }, // System identifier for automated actions
+      {
+        type: 'TERMS_ACCEPTED',
+        category: 'LEGAL_COMPLIANCE'
+      },
+      {
+        id: userId,
+        email: email,
+        type: 'LEGAL_ACCEPTANCE',
+        company: company,
+        termsVersion: termsVersion || '1.0.0',
+        privacyVersion: privacyVersion || '1.0.0',
+        acceptedAt: new Date().toISOString(),
+        ipAddress: ipAddress || 'unknown',
+        userAgent: userAgent || 'unknown'
+      },
+      {
+        before: { termsAccepted: false, privacyAccepted: false },
+        after: { termsAccepted: true, privacyAccepted: true },
+        changes: ['terms_acceptance', 'privacy_acceptance']
+      },
+      {
+        ipAddress: ipAddress || 'unknown',
+        userAgent: userAgent || 'unknown',
+        sessionId: 'signup',
+        legalAction: true,
+        gdprConsent: true
+      }
+    );
+
+    res.json({ success: true, message: 'Terms acceptance logged successfully' });
+  } catch (error) {
+    console.error('Error in /log/terms-acceptance:', error);
+    res.status(500).json({ error: 'Failed to log terms acceptance' });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`OpssFlow Backend running on port ${PORT}`);
   console.log(`Stripe webhooks endpoint: /webhook`);
   console.log(`Admin endpoints: /admin/users, /admin/users/:userId/subscription, /admin/users/:userId (DELETE), /admin/audit-logs`);
+  console.log(`Contact endpoints: /contact, /ticket/:ticketNumber, /admin/contact-inquiries, /admin/contact-inquiries/stats`);
   console.log(`Reactivation endpoint: /reactivate-subscription`);
 });

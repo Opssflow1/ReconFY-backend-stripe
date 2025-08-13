@@ -22,6 +22,21 @@ class ImmutableAuditLogger {
       targetUserId: targetUser?.id,
       targetEmail: targetUser?.email || null,
       targetDataType: this.classifyData(targetUser),
+      // Store additional target information for inquiries and legal actions
+      targetInfo: targetUser?.type === 'INQUIRY' ? {
+        firstName: targetUser.firstName,
+        lastName: targetUser.lastName,
+        company: targetUser.company,
+        ticketNumber: targetUser.ticketNumber
+      } : targetUser?.type === 'LEGAL_ACCEPTANCE' ? {
+        email: targetUser.email,
+        company: targetUser.company,
+        termsVersion: targetUser.termsVersion,
+        privacyVersion: targetUser.privacyVersion,
+        acceptedAt: targetUser.acceptedAt,
+        ipAddress: targetUser.ipAddress,
+        userAgent: targetUser.userAgent
+      } : null,
       changes: {
         before: this.encryptSensitiveData(details.before),
         after: this.encryptSensitiveData(details.after),
@@ -78,6 +93,21 @@ class ImmutableAuditLogger {
       targetUserId: targetUser?.id,
       targetEmail: targetUser?.email || null,
       targetDataType: this.classifyData(targetUser),
+      // Store additional target information for inquiries and legal actions
+      targetInfo: targetUser?.type === 'INQUIRY' ? {
+        firstName: targetUser.firstName,
+        lastName: targetUser.lastName,
+        company: targetUser.company,
+        ticketNumber: targetUser.ticketNumber
+      } : targetUser?.type === 'LEGAL_ACCEPTANCE' ? {
+        email: targetUser.email,
+        company: targetUser.company,
+        termsVersion: targetUser.termsVersion,
+        privacyVersion: targetUser.privacyVersion,
+        acceptedAt: targetUser.acceptedAt,
+        ipAddress: targetUser.ipAddress,
+        userAgent: targetUser.userAgent
+      } : null,
       changes: {
         before: null,
         after: null,
@@ -121,6 +151,12 @@ class ImmutableAuditLogger {
   // Data classification for compliance
   classifyData(user) {
     if (!user) return 'INTERNAL';
+    
+    // Check for inquiry data first
+    if (user.type === 'INQUIRY') return 'INQUIRY';
+    
+    // Check for legal acceptance data
+    if (user.type === 'LEGAL_ACCEPTANCE' || user.legalAcceptance) return 'LEGAL';
     
     // Check for health-related data
     if (user.healthData || user.medicalInfo || user.hipaaData) return 'PHI';
@@ -179,13 +215,17 @@ class ImmutableAuditLogger {
   calculateRiskScore(metadata) {
     let score = 0.1; // Base score
     
-    // High-risk indicators
-    if (metadata.unusualTime) score += 0.3;
-    if (metadata.unusualLocation) score += 0.2;
-    if (metadata.bulkOperation) score += 0.4;
-    if (metadata.sensitiveData) score += 0.3;
-    if (metadata.deleteOperation) score += 0.5;
-    if (metadata.userDeletion) score += 0.8;
+          // High-risk indicators
+      if (metadata.unusualTime) score += 0.3;
+      if (metadata.unusualLocation) score += 0.2;
+      if (metadata.bulkOperation) score += 0.4;
+      if (metadata.sensitiveData) score += 0.3;
+      if (metadata.deleteOperation) score += 0.5;
+      if (metadata.userDeletion) score += 0.8;
+      // Legal compliance indicators
+      if (metadata.legalAction) score += 0.2;
+      if (metadata.termsUpdate) score += 0.3;
+      if (metadata.gdprConsent) score += 0.1;
     
     return Math.min(score, 1.0);
   }
@@ -201,7 +241,17 @@ class ImmutableAuditLogger {
       hipaaCategory: dataClassification === 'PHI' ? 'HEALTHCARE_OPERATIONS' : null,
       soxRelevant: action.category === 'FINANCIAL' || dataClassification === 'FINANCIAL',
       gdprRelevant: targetUser?.euResident || dataClassification === 'PII',
-      hipaaRelevant: dataClassification === 'PHI'
+      hipaaRelevant: dataClassification === 'PHI',
+      // NEW: Legal compliance metadata
+      legalCompliance: {
+        termsVersion: targetUser?.termsVersion || '1.0.0',
+        privacyVersion: targetUser?.privacyVersion || '1.0.0',
+        gdprConsent: dataClassification === 'LEGAL' ? 'EXPLICIT' : null,
+        soxCompliant: dataClassification === 'LEGAL' ? true : false,
+        consentTimestamp: targetUser?.acceptedAt || null,
+        consentIpAddress: targetUser?.ipAddress || null,
+        consentUserAgent: targetUser?.userAgent || null
+      }
     };
   }
 
@@ -229,15 +279,10 @@ class ImmutableAuditLogger {
     try {
       let query = this.db.ref('adminAuditLogs');
       
-      // Apply filters
-      if (filters.adminUser) {
-        query = query.orderByChild('adminEmail').equalTo(filters.adminUser);
-      }
+
       
-      if (filters.action) {
-        query = query.orderByChild('action').equalTo(filters.action);
-      }
-      
+      // Use only ONE orderByChild for timestamp (most efficient for audit logs)
+      // Apply date range filter if specified
       if (filters.dateRange) {
         const endDate = new Date();
         const startDate = new Date();
@@ -259,17 +304,53 @@ class ImmutableAuditLogger {
             startDate.setDate(endDate.getDate() - 7);
         }
         
+
         query = query.orderByChild('timestamp').startAt(startDate.toISOString()).endAt(endDate.toISOString());
       }
       
-      const snapshot = await query.limitToLast(100).once('value');
-      const logs = [];
+      // Fetch more logs initially since we'll filter some out
+      const snapshot = await query.limitToLast(200).once('value');
+      let logs = [];
       
       snapshot.forEach((child) => {
-        logs.push(child.val());
+        const log = child.val();
+        
+        // Apply JavaScript filters for admin user and action (using partial matching)
+        if (filters.adminUser && !log.adminEmail.toLowerCase().includes(filters.adminUser.toLowerCase())) {
+          return; // Skip this log
+        }
+        
+        if (filters.action && !log.action.toLowerCase().includes(filters.action.toLowerCase())) {
+          return; // Skip this log
+        }
+        
+        logs.push(log);
       });
       
-      return logs.reverse();
+      // If no logs found with date filter, try without date filter as fallback
+      if (logs.length === 0 && filters.dateRange) {
+        const fallbackSnapshot = await this.db.ref('adminAuditLogs').limitToLast(200).once('value');
+        
+        fallbackSnapshot.forEach((child) => {
+          const log = child.val();
+          
+          // Apply only admin user and action filters (no date filter) - using partial matching
+          if (filters.adminUser && !log.adminEmail.toLowerCase().includes(filters.adminUser.toLowerCase())) {
+            return;
+          }
+          
+          if (filters.action && !log.action.toLowerCase().includes(filters.action.toLowerCase())) {
+            return;
+          }
+          
+          logs.push(log);
+        });
+      }
+      
+      // Sort by timestamp (newest first) and limit to 100 for display
+      logs.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      return logs.slice(0, 100);
+      
     } catch (error) {
       console.error('[AUDIT] Failed to get audit logs', { error: error.message });
       throw error;
