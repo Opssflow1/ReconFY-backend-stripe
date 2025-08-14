@@ -162,12 +162,12 @@ const cognitoClient = new CognitoIdentityProviderClient({
 
 // Allow both deployed frontend and localhost for CORS
 const allowedOrigins = [
-  process.env.FRONTEND_URL?.trim(),
+  ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map(o => o.trim()) : []),
   "http://localhost:3001",
   "http://localhost:3000",
   "https://main.d2ukbtk1dng1se.amplifyapp.com",
   "https://main.d2899pnyi792jc.amplifyapp.com"
-].filter(Boolean);
+];
 
 app.use(cors({
   origin: function (origin, callback) {
