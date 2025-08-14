@@ -1059,7 +1059,7 @@ app.post("/webhook", async (req, res) => {
             const user = userData.val();
             if (user) {
               await auditLogger.createAuditLog(
-                { sub: 'SYSTEM', email: 'system@opssflow.com' }, // System identifier for automated actions
+                { sub: 'SYSTEM', email: 'USER' }, // System identifier for automated actions
                 {
                   type: 'SUBSCRIPTION_ACTIVATED',
                   category: 'LEGAL_COMPLIANCE'
@@ -2002,7 +2002,7 @@ app.post("/log/terms-acceptance", async (req, res) => {
 
     // Log terms acceptance for audit purposes
     await auditLogger.createAuditLog(
-      { sub: 'SYSTEM', email: 'system@opssflow.com' }, // System identifier for automated actions
+      { sub: 'SYSTEM', email: 'USER' }, // System identifier for automated actions
       {
         type: 'TERMS_ACCEPTED',
         category: 'LEGAL_COMPLIANCE'
