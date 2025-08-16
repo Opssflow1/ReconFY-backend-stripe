@@ -1,5 +1,6 @@
 // Cognito JWT verification middleware
 import cognitoAuthenticate from "./cognitoAuth.js";
+import { requireActiveSubscription, requireAnySubscription, setDatabase } from "./subscriptionAuth.js";
 
 import express from "express";
 import Stripe from "stripe";
@@ -9,9 +10,15 @@ import admin from "firebase-admin";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import ImmutableAuditLogger from "./auditLogger.js";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import rateLimit from "express-rate-limit";
+import helmet from "helmet";
+import Joi from "joi";
 
 // Load environment variables
 dotenv.config();
+
+// Set timezone to UTC for consistency across all deployments
+process.env.TZ = 'UTC';
 
 // Initialize Firebase Admin
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -21,6 +28,9 @@ admin.initializeApp({
 });
 
 const db = admin.database();
+
+// Initialize subscription auth middleware with database reference
+setDatabase(db);
 
 // Initialize audit logger with database instance
 const auditLogger = new ImmutableAuditLogger(db);
@@ -33,6 +43,141 @@ const sesClient = new SESClient({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   }
 });
+
+// ============================================================================
+// INPUT VALIDATION SCHEMAS
+// ============================================================================
+
+// Validation schemas
+const subscriptionSchema = Joi.object({
+  userId: Joi.string().required(),
+  newPlanType: Joi.string().valid('MONTHLY', 'YEARLY', 'TRIAL').required()
+});
+
+const contactSchema = Joi.object({
+  firstName: Joi.string().min(2).max(50).required(),
+  lastName: Joi.string().min(2).max(50).required(),
+  email: Joi.string().email().required(),
+  company: Joi.string().min(2).max(100).optional(),
+  message: Joi.string().min(10).max(1000).required()
+});
+
+const analyticsSchema = Joi.object({
+  analysisType: Joi.string().valid('profit_calculation', 'cost_analysis', 'revenue_forecast').required(),
+  profitData: Joi.object().optional(),
+  calculationResults: Joi.object().optional(),
+  missingRebates: Joi.object().optional(),
+  totalProfit: Joi.number().min(0).required(),
+  totalRevenue: Joi.number().min(0).required(),
+  filesProcessed: Joi.number().integer().min(0).required(),
+  metadata: Joi.object().optional(),
+  // Add missing fields that frontend sends:
+  verificationResults: Joi.object().optional(),
+  promoOrders: Joi.object().optional(),
+  analysisDate: Joi.string().isoDate().optional()
+});
+
+// Validation middleware
+const validateBody = (schema) => {
+  return (req, res, next) => {
+    const { error } = schema.validate(req.body);
+    if (error) {
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: error.details.map(d => d.message)
+      });
+    }
+    next();
+  };
+};
+
+// ============================================================================
+// RATE LIMITING CONFIGURATION
+// ============================================================================
+
+// Global rate limiter for all endpoints
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 200, // limit each IP to 100 requests per 15 minutes
+  message: { error: 'Too many requests from this IP, please try again later.' },
+  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
+  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Too many requests from this IP',
+      message: 'Please try again later.',
+      retryAfter: Math.ceil(15 * 60 / 1000) // 15 minutes in seconds
+    });
+  }
+});
+
+// Stricter rate limiting for authentication endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // limit each IP to 5 authentication attempts per 15 minutes
+  message: { error: 'Too many authentication attempts, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Too many authentication attempts',
+      message: 'Please try again later.',
+      retryAfter: Math.ceil(15 * 60 / 1000)
+    });
+  }
+});
+
+// Rate limiting for contact form submissions
+const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 3, // limit each IP to 3 contact submissions per hour
+  message: { error: 'Too many contact form submissions, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Too many contact form submissions',
+      message: 'Please try again later.',
+      retryAfter: Math.ceil(60 * 60 / 1000) // 1 hour in seconds
+    });
+  }
+});
+
+// Rate limiting for webhook endpoints
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 200, // limit each IP to 10 webhook calls per minute
+  message: { error: 'Too many webhook calls, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Too many webhook calls',
+      message: 'Please try again later.',
+      retryAfter: Math.ceil(60 / 1000) // 1 minute in seconds
+    });
+  }
+});
+
+// Rate limiting for admin endpoints
+const adminLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500, // limit each IP to 50 admin requests per 15 minutes
+  message: { error: 'Too many admin requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res.status(429).json({
+      error: 'Too many admin requests',
+      message: 'Please try again later.',
+      retryAfter: Math.ceil(15 * 60 / 1000)
+    });
+  }
+});
+
+// ============================================================================
+// END RATE LIMITING CONFIGURATION
+// ============================================================================
 
 // Email templates
 const EMAIL_TEMPLATES = {
@@ -160,13 +305,34 @@ const cognitoClient = new CognitoIdentityProviderClient({
 
 
 
+// Safe parsing of FRONTEND_URL environment variable
+const parseFrontendUrls = () => {
+  try {
+    if (!process.env.FRONTEND_URL) return [];
+    
+    return process.env.FRONTEND_URL
+      .split(',')
+      .map(url => url.trim())
+      .filter(url => {
+        try {
+          new URL(url);
+          return true;
+        } catch {
+          console.warn(`Invalid URL in FRONTEND_URL: ${url}`);
+          return false;
+        }
+      });
+  } catch (error) {
+    console.error('Error parsing FRONTEND_URL:', error);
+    return [];
+  }
+};
+
 // Allow both deployed frontend and localhost for CORS
 const allowedOrigins = [
-  ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(',').map(o => o.trim()) : []),
+  ...parseFrontendUrls(),
   "http://localhost:3001",
-  "http://localhost:3000",
-  "https://main.d2ukbtk1dng1se.amplifyapp.com",
-  "https://main.d2899pnyi792jc.amplifyapp.com"
+  "http://localhost:3000"
 ];
 
 app.use(cors({
@@ -176,24 +342,93 @@ app.use(cors({
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+    console.warn(`CORS blocked: ${origin}`);
     return callback(new Error('Not allowed by CORS: ' + origin));
   },
-  credentials: true
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  maxAge: 86400
+}));
+
+// Security headers
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: [
+        "'self'", 
+        "https://api.stripe.com", 
+        "https://cognito-idp.us-east-1.amazonaws.com",
+        "https://firebase.googleapis.com"
+      ],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"]
+    }
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
+  noSniff: true,
+  xssFilter: true,
+  frameguard: { action: 'deny' }
 }));
 
 // Webhook endpoint needs raw body for signature verification
+app.use("/webhook", webhookLimiter, express.raw({ type: "application/json" }));
 
-app.use("/webhook", express.raw({ type: "application/json" }));
-app.use(express.json());
+// Request limits and security
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// Request timeout middleware
+app.use((req, res, next) => {
+  req.setTimeout(30000, () => {
+    res.status(408).json({ error: 'Request timeout' });
+  });
+  next();
+});
+
+// Apply global rate limiting to all routes
+app.use(globalLimiter);
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error('Global error handler:', err);
+  
+  if (err.message && err.message.includes('CORS')) {
+    return res.status(403).json({
+      error: 'CORS Error',
+      message: 'Origin not allowed',
+      details: err.message
+    });
+  }
+  
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      error: 'Validation Error',
+      message: err.message
+    });
+  }
+  
+  res.status(500).json({
+    error: 'Internal Server Error',
+    message: 'Something went wrong'
+  });
+});
 
 // Health check
-
-app.get("/", (req, res) => {
+app.get("/", globalLimiter, (req, res) => {
   res.send({ status: "OpssFlow Backend API", version: "1.0.0" });
 });
 
 // Secure endpoint to get current user's subscription data (moved after app is defined)
-app.get('/subscription/me', cognitoAuthenticate, async (req, res) => {
+app.get('/subscription/me', globalLimiter, cognitoAuthenticate, async (req, res) => {
   const userId = req.user.sub;
   console.log('[DEBUG] GET /subscription/me called', { userId });
   try {
@@ -207,6 +442,28 @@ app.get('/subscription/me', cognitoAuthenticate, async (req, res) => {
     res.json({ subscription });
   } catch (err) {
     console.error('[DEBUG] Error fetching subscription:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// New endpoint: Validate subscription access for protected features
+app.get('/subscription/validate', globalLimiter, cognitoAuthenticate, requireActiveSubscription, async (req, res) => {
+  try {
+    // req.subscription is set by the middleware
+    const { subscription } = req;
+    
+    res.json({
+      hasAccess: true,
+      subscription: {
+        status: subscription.status,
+        tier: subscription.tier,
+        endDate: subscription.endDate,
+        daysRemaining: subscription.daysRemaining,
+        isActive: subscription.isActive
+      }
+    });
+  } catch (err) {
+    console.error('[DEBUG] Error validating subscription:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -245,7 +502,7 @@ const updateUserSubscription = async (userId, subscriptionData) => {
 };
 
 // Update Stripe subscription plan (upgrade/downgrade)
-app.post("/update-subscription-plan", cognitoAuthenticate, async (req, res) => {
+app.post("/update-subscription-plan", authLimiter, validateBody(subscriptionSchema), cognitoAuthenticate, async (req, res) => {
   const { userId, newPlanType } = req.body;
   console.log('[DEBUG] POST /update-subscription-plan called', { userId, newPlanType });
   try {
@@ -293,7 +550,7 @@ app.post("/update-subscription-plan", cognitoAuthenticate, async (req, res) => {
 });
 
 // Create Stripe Checkout session
-app.post("/create-checkout-session", cognitoAuthenticate, async (req, res) => {
+app.post("/create-checkout-session", authLimiter, cognitoAuthenticate, async (req, res) => {
   const { userId, planType, userEmail, successUrl, cancelUrl } = req.body;
   
   try {
@@ -323,7 +580,7 @@ app.post("/create-checkout-session", cognitoAuthenticate, async (req, res) => {
 });
 
 // Create billing portal session
-app.post("/create-portal-session", cognitoAuthenticate, async (req, res) => {
+app.post("/create-portal-session", authLimiter, cognitoAuthenticate, async (req, res) => {
   const { customerId, returnUrl } = req.body;
   
   try {
@@ -340,7 +597,7 @@ app.post("/create-portal-session", cognitoAuthenticate, async (req, res) => {
 });
 
 // Verify payment and update subscription
-app.post("/verify-payment", cognitoAuthenticate, async (req, res) => {
+app.post("/verify-payment", authLimiter, cognitoAuthenticate, async (req, res) => {
   const { userId, sessionId } = req.body;
   
   try {
@@ -378,7 +635,7 @@ app.post("/verify-payment", cognitoAuthenticate, async (req, res) => {
 });
 
 // Cancel subscription
-app.post("/cancel-subscription", cognitoAuthenticate, async (req, res) => {
+app.post("/cancel-subscription", authLimiter, cognitoAuthenticate, async (req, res) => {
   const { userId, subscriptionId } = req.body;
   try {
     // Set cancel_at_period_end on Stripe (never delete immediately)
@@ -395,7 +652,7 @@ app.post("/cancel-subscription", cognitoAuthenticate, async (req, res) => {
 
 // Admin: Get all users with subscription data
 // Admin: Get all users with subscription data (only return subscription object)
-app.get("/admin/users", cognitoAuthenticate, async (req, res) => {
+app.get("/admin/users", adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -427,7 +684,7 @@ app.get("/admin/users", cognitoAuthenticate, async (req, res) => {
 
 
 // Reactivate subscription endpoint
-app.post("/reactivate-subscription", cognitoAuthenticate, async (req, res) => {
+app.post("/reactivate-subscription", authLimiter, cognitoAuthenticate, async (req, res) => {
   const { userId, planType, userEmail, successUrl, cancelUrl } = req.body;
   try {
     // Fetch user from DB
@@ -508,7 +765,7 @@ app.post("/reactivate-subscription", cognitoAuthenticate, async (req, res) => {
 // -----------------------------
 
 // Create analytics record for current user
-app.post('/analytics', cognitoAuthenticate, async (req, res) => {
+app.post('/analytics', globalLimiter, validateBody(analyticsSchema), cognitoAuthenticate, async (req, res) => {
   try {
     const userId = req.user.sub;
     const {
@@ -519,7 +776,10 @@ app.post('/analytics', cognitoAuthenticate, async (req, res) => {
       totalProfit,
       totalRevenue,
       filesProcessed,
-      metadata
+      metadata,
+      verificationResults,
+      promoOrders,
+      analysisDate
     } = req.body || {};
 
     const analyticsId = `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -535,12 +795,14 @@ app.post('/analytics', cognitoAuthenticate, async (req, res) => {
       totalProfit: typeof totalProfit === 'number' ? totalProfit : null,
       totalRevenue: typeof totalRevenue === 'number' ? totalRevenue : null,
       filesProcessed: typeof filesProcessed === 'number' ? filesProcessed : null,
+      verificationResults: verificationResults || {},
+      promoOrders: promoOrders || {},
       metadata: {
         ...(metadata || {}),
         calculationTimestamp: nowIso,
         source: (metadata && metadata.source) || 'backend'
       },
-      analysisDate: nowIso,
+      analysisDate: analysisDate || nowIso,
       createdAt: nowIso
     };
 
@@ -553,7 +815,7 @@ app.post('/analytics', cognitoAuthenticate, async (req, res) => {
 });
 
 // Get current user's analytics list (sorted desc by createdAt)
-app.get('/analytics', cognitoAuthenticate, async (req, res) => {
+app.get('/analytics', globalLimiter, cognitoAuthenticate, async (req, res) => {
   try {
     const userId = req.user.sub;
     const snap = await db.ref(`analytics/${userId}`).once('value');
@@ -567,7 +829,7 @@ app.get('/analytics', cognitoAuthenticate, async (req, res) => {
 });
 
 // Delete all analytics for current user
-app.delete('/analytics', cognitoAuthenticate, async (req, res) => {
+app.delete('/analytics', globalLimiter, cognitoAuthenticate, async (req, res) => {
   try {
     const userId = req.user.sub;
     await db.ref(`analytics/${userId}`).remove();
@@ -579,7 +841,7 @@ app.delete('/analytics', cognitoAuthenticate, async (req, res) => {
 });
 
 // Admin: get analytics for specific user
-app.get('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => {
+app.get('/admin/analytics/:userId', adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: 'Forbidden: Admins only' });
@@ -597,7 +859,7 @@ app.get('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => {
 });
 
 // Admin: delete all analytics for specific user
-app.delete('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => {
+app.delete('/admin/analytics/:userId', adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: 'Forbidden: Admins only' });
@@ -665,7 +927,7 @@ app.delete('/admin/analytics/:userId', cognitoAuthenticate, async (req, res) => 
 });
 
 // Admin: Update user subscription
-app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, res) => {
+app.put("/admin/users/:userId/subscription", adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -819,7 +1081,7 @@ app.put("/admin/users/:userId/subscription", cognitoAuthenticate, async (req, re
 });
 
 // Admin: Delete user completely (Firebase, Stripe, Cognito)
-app.delete('/admin/users/:userId', cognitoAuthenticate, async (req, res) => {
+app.delete('/admin/users/:userId', adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -955,7 +1217,7 @@ app.delete('/admin/users/:userId', cognitoAuthenticate, async (req, res) => {
 });
 
 // Admin: Get audit logs
-app.get('/admin/audit-logs', cognitoAuthenticate, async (req, res) => {
+app.get('/admin/audit-logs', adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -984,7 +1246,7 @@ app.get('/admin/audit-logs', cognitoAuthenticate, async (req, res) => {
 });
 
 // Admin: Verify audit log integrity
-app.get('/admin/audit-logs/:logId/verify', cognitoAuthenticate, async (req, res) => {
+app.get('/admin/audit-logs/:logId/verify', adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -1007,7 +1269,7 @@ app.get('/admin/audit-logs/:logId/verify', cognitoAuthenticate, async (req, res)
 });
 
 // Stripe webhook endpoint
-app.post("/webhook", async (req, res) => {
+app.post("/webhook", webhookLimiter, async (req, res) => {
   const sig = req.headers["stripe-signature"];
   let event;
   console.log('[WEBHOOK] Received Stripe webhook', {
@@ -1235,7 +1497,7 @@ app.post("/webhook", async (req, res) => {
 });
 
 // Enhanced Contact form submission endpoint
-app.post("/contact", async (req, res) => {
+app.post("/contact", contactLimiter, validateBody(contactSchema), async (req, res) => {
   try {
     const { firstName, lastName, email, company, message, category = 'GENERAL' } = req.body;
     
@@ -1317,7 +1579,7 @@ app.post("/contact", async (req, res) => {
 });
 
 // Admin: Get all contact inquiries with enhanced filters
-app.get("/admin/contact-inquiries", cognitoAuthenticate, async (req, res) => {
+app.get("/admin/contact-inquiries", adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: "Forbidden: Admins only" });
@@ -1383,7 +1645,7 @@ app.get("/admin/contact-inquiries", cognitoAuthenticate, async (req, res) => {
 });
 
 // Admin: Update contact inquiry with response system
-app.put("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (req, res) => {
+app.put("/admin/contact-inquiries/:inquiryId", adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: "Forbidden: Admins only" });
@@ -1542,7 +1804,7 @@ app.put("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (req, 
 });
 
 // Admin: Send response to customer
-app.post("/admin/contact-inquiries/:inquiryId/respond", cognitoAuthenticate, async (req, res) => {
+app.post("/admin/contact-inquiries/:inquiryId/respond", adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: "Forbidden: Admins only" });
@@ -1671,7 +1933,7 @@ ReconFY Support Team
 });
 
 // Admin: Get contact inquiry statistics
-app.get("/admin/contact-inquiries/stats", cognitoAuthenticate, async (req, res) => {
+app.get("/admin/contact-inquiries/stats", adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: "Forbidden: Admins only" });
@@ -1722,7 +1984,7 @@ app.get("/admin/contact-inquiries/stats", cognitoAuthenticate, async (req, res) 
 });
 
 // Public: Get ticket by ticket number (customer portal)
-app.get("/ticket/:ticketNumber", async (req, res) => {
+app.get("/ticket/:ticketNumber", globalLimiter, async (req, res) => {
   try {
     const { ticketNumber } = req.params;
     
@@ -1775,7 +2037,7 @@ app.get("/ticket/:ticketNumber", async (req, res) => {
 });
 
 // Public: Customer reply to ticket
-app.post("/ticket/:ticketNumber/reply", async (req, res) => {
+app.post("/ticket/:ticketNumber/reply", contactLimiter, async (req, res) => {
   try {
     const { ticketNumber } = req.params;
     const { message, customerEmail, customerName } = req.body;
@@ -1892,7 +2154,7 @@ ReconFY System
 });
 
 // Admin: Delete contact inquiry
-app.delete("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (req, res) => {
+app.delete("/admin/contact-inquiries/:inquiryId", adminLimiter, cognitoAuthenticate, async (req, res) => {
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
     return res.status(403).json({ error: "Forbidden: Admins only" });
@@ -1942,7 +2204,7 @@ app.delete("/admin/contact-inquiries/:inquiryId", cognitoAuthenticate, async (re
 });
 
 // Admin: Get legal compliance statistics
-app.get("/admin/legal-compliance", cognitoAuthenticate, async (req, res) => {
+app.get("/admin/legal-compliance", adminLimiter, cognitoAuthenticate, async (req, res) => {
   // Admin group check (Cognito 'Admins' group)
   const groups = req.user["cognito:groups"] || [];
   if (!groups.includes("Admins")) {
@@ -1992,7 +2254,7 @@ app.get("/admin/legal-compliance", cognitoAuthenticate, async (req, res) => {
 });
 
 // Log terms acceptance for audit purposes
-app.post("/log/terms-acceptance", async (req, res) => {
+app.post("/log/terms-acceptance", globalLimiter, async (req, res) => {
   try {
     const { userId, email, company, termsVersion, privacyVersion, ipAddress, userAgent } = req.body;
     
