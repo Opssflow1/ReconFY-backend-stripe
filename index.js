@@ -332,7 +332,10 @@ const parseFrontendUrls = () => {
 const allowedOrigins = [
   ...parseFrontendUrls(),
   "http://localhost:3001",
-  "http://localhost:3000"
+  "http://localhost:3000",
+  "https://www.myreconfy.com",
+  "https://myreconfy.com",
+  "https://admin.myreconfy.com"
 ];
 
 app.use(cors({
