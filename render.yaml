@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: opss-backend-stripe
+    env: node
+    buildCommand: |
+      npm install
+      # Install ALL required build dependencies for PyMuPDF
+      apt-get update && apt-get install -y \
+        build-essential \
+        cmake \
+        ninja-build \
+        libfreetype6-dev \
+        libharfbuzz-dev \
+        libjpeg-dev \
+        libopenjp2-7-dev \
+        libtesseract-dev \
+        libtiff5-dev \
+        libpng-dev \
+        libz-dev \
+        pkg-config \
+        python3-dev \
+        python3-pip \
+        python3-venv \
+        git \
+        wget \
+        curl
+      # Upgrade pip, setuptools, and wheel for better dependency management
+      pip install --upgrade pip setuptools wheel
+      # Force installation of pre-built wheels only (avoid compilation)
+      pip install --no-cache-dir --only-binary=all -r python/requirements.txt
+    startCommand: npm start
