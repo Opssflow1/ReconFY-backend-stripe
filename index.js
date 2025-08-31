@@ -3143,6 +3143,9 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
                 nextBillingDate: new Date(subscription.current_period_end * 1000).toISOString(),
                 cancelAtPeriodEnd: false,
                 isActive: true,
+                paymentStatus: 'ACTIVE',
+                lastPaymentFailure: null,
+                paymentRetryCount: 0,
                 billing: {
                   amount: subscription.items.data[0].price.unit_amount / 100,
                   currency: subscription.items.data[0].price.currency.toUpperCase(),
@@ -3523,7 +3526,11 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               exportEnabled: true,
               fullAccess: true,
               prioritySupport: tier === 'GROWTH' || tier === 'PRO' || tier === 'ENTERPRISE'
-            }
+            },
+            // ✅ FIX: Set payment fields consistently with other webhooks
+            paymentStatus: updatedSubscription.status === 'active' ? 'ACTIVE' : 'INACTIVE',
+            lastPaymentFailure: null,
+            paymentRetryCount: 0
           };
 
           await updateUserSubscription(updatedUserId, subscriptionUpdate);
@@ -3748,11 +3755,15 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               event,
               userId,
               async () => {
-                // ✅ SAAS BEST PRACTICE: Minimal payment confirmation update only
+                // ✅ SAAS BEST PRACTICE: Clear all payment failure fields on successful payment
                 const result = await updateUserSubscription(userId, {
                   status: 'ACTIVE',
+                  isActive: true,
+                  paymentStatus: 'ACTIVE',
                   lastPaymentDate: new Date(invoice.created * 1000).toISOString(),
-                  nextBillingDate: new Date(subscription.current_period_end * 1000).toISOString()
+                  nextBillingDate: new Date(subscription.current_period_end * 1000).toISOString(),
+                  lastPaymentFailure: null,
+                  paymentRetryCount: 0
                 });
                 
                 if (result.skipped) {
@@ -3807,12 +3818,27 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               event,
               userId,
               async () => {
-                // Update payment failure status
+                // Update payment failure status and cancel subscription (same as cancel endpoint)
                 await updateUserSubscription(userId, {
-                  paymentStatus: 'FAILED',
+                  status: 'CANCELLED',          // Mark as CANCELLED (same as cancel endpoint)
+                  isActive: false,              // Set isActive to false (same as cancel endpoint)
+                  cancelAtPeriodEnd: true,      // Set cancelAtPeriodEnd flag (same as cancel endpoint)
+                  cancellationDate: new Date().toISOString(), // Record cancellation date
+                  paymentStatus: 'FAILED',      // Still track payment status
                   lastPaymentFailure: new Date(invoice.created * 1000).toISOString(),
-                  paymentRetryCount: (invoice.attempt_count || 1)
+                  paymentRetryCount: (invoice.attempt_count || 1),
+                  cancellationReason: 'payment_failure' // Add reason for reporting
                 });
+                
+                // Then, update the subscription in Stripe to match your database
+                try {
+                  await stripe.subscriptions.update(invoice.subscription, {
+                    cancel_at_period_end: true  // Same as your cancel endpoint
+                  });
+                  console.log(`[PAYMENT] Subscription ${invoice.subscription} marked for cancellation due to payment failure`);
+                } catch (cancelError) {
+                  console.error(`[PAYMENT] Error marking subscription ${invoice.subscription} for cancellation:`, cancelError);
+                }
                 
                 // Create audit log for payment failure
                 try {
@@ -3822,7 +3848,7 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
                     await auditLogger.createAuditLog(
                       { sub: 'SYSTEM', email: 'WEBHOOK' },
                       {
-                        type: 'PAYMENT_FAILED',
+                        type: 'SUBSCRIPTION_CANCELLED',
                         category: 'SUBSCRIPTION_MANAGEMENT'
                       },
                       {
@@ -3832,9 +3858,20 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
                         company: user.company
                       },
                       {
-                        before: { paymentStatus: 'ACTIVE' },
-                        after: { paymentStatus: 'FAILED' },
-                        changes: ['payment_failed', 'dunning_initiated']
+                        before: {
+                          status: user.subscription?.status || 'ACTIVE',
+                          tier: user.subscription?.tier,
+                          cancelAtPeriodEnd: false,
+                          paymentStatus: 'ACTIVE'
+                        },
+                        after: {
+                          status: 'CANCELLED',
+                          tier: user.subscription?.tier,
+                          cancelAtPeriodEnd: true,
+                          cancellationDate: new Date().toISOString(),
+                          paymentStatus: 'FAILED'
+                        },
+                        changes: ['subscription_cancelled', 'payment_failed', 'cancel_at_period_end: false -> true']
                       },
                       {
                         ipAddress: 'webhook',
