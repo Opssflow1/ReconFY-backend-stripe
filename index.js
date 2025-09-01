@@ -3226,69 +3226,8 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
         }
         break;
       }
-      case 'invoice.paid': {
-        const invoice = event.data.object;
-        console.log('[DEBUG] Webhook: invoice.paid', { invoice });
-        if (invoice.subscription) {
-          const subscription = await stripe.subscriptions.retrieve(invoice.subscription);
-          const customer = await stripe.customers.retrieve(invoice.customer);
-                  // ✅ PERFORMANCE FIX: Use indexed query instead of scanning all users
-          let userId = null;
-        try {
-          // Create an index query for faster lookup
-          const userQuery = await db.ref('users')
-            .orderByChild('subscription/stripeCustomerId')
-            .equalTo(customer.id)
-            .once('value');
-          
-          if (userQuery.exists()) {
-            // Get the first (and should be only) user with this customer ID
-            const userSnapshot = userQuery.val();
-            userId = Object.keys(userSnapshot)[0];
-          }
-        } catch (queryError) {
-          console.warn('[PERFORMANCE] Indexed query failed, falling back to scan:', queryError.message);
-          // Fallback to scanning if indexed query fails
-          const usersSnapshot = await db.ref('users').once('value');
-          usersSnapshot.forEach(childSnapshot => {
-            const userData = childSnapshot.val();
-            if (userData.subscription?.stripeCustomerId === customer.id) {
-              userId = childSnapshot.key;
-            }
-          });
-        }
-        
-          if (userId) {
-            // Use safe webhook processing to prevent race conditions
-            const result = await webhookProcessingUtils.processWebhookSafely(
-              event,
-              userId,
-              async () => {
-            await updateUserSubscription(userId, {
-              status: 'ACTIVE',
-              endDate: new Date(subscription.current_period_end * 1000).toISOString(),
-              nextBillingDate: new Date(subscription.current_period_end * 1000).toISOString(),
-              lastPaymentDate: new Date(invoice.created * 1000).toISOString()
-            });
-                return { success: true };
-              }
-            );
-            
-            if (result.success) {
-            console.log('[DEBUG] Webhook: User subscription updated in DB (invoice.paid)', { userId });
-            } else {
-              console.error('[DEBUG] Webhook: Failed to process invoice.paid', { 
-                userId, 
-                reason: result.reason,
-                error: result.error
-              });
-            }
-          } else {
-            console.warn('[DEBUG] Webhook: No user found for customer in invoice.paid', { customerId: customer.id });
-          }
-        }
-        break;
-      }
+      // ❌ DUPLICATE invoice.paid HANDLER REMOVED - This was incomplete and caused race conditions
+      // The complete handler is below at line 3723
       case 'customer.subscription.deleted': {
         const deletedSubscription = event.data.object;
         console.log('[DEBUG] Webhook: customer.subscription.deleted', { deletedSubscription });
@@ -3759,10 +3698,13 @@ app.post("/webhook", webhookLimiter, async (req, res) => {
               event,
               userId,
               async () => {
-                // ✅ SAAS BEST PRACTICE: Clear all payment failure fields on successful payment
+                // ✅ SAAS BEST PRACTICE: Clear all payment failure AND cancellation fields on successful payment
                 const result = await updateUserSubscription(userId, {
                   status: 'ACTIVE',
                   isActive: true,
+                  cancelAtPeriodEnd: false,        // ✅ Clear cancellation flag
+                  cancellationDate: null,          // ✅ Clear cancellation date
+                  cancellationReason: null,        // ✅ Clear cancellation reason
                   paymentStatus: 'ACTIVE',
                   lastPaymentDate: new Date(invoice.created * 1000).toISOString(),
                   nextBillingDate: new Date(subscription.current_period_end * 1000).toISOString(),
