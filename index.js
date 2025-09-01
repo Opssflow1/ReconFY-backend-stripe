@@ -10,6 +10,7 @@ import admin from "firebase-admin";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import ImmutableAuditLogger from "./auditLogger.js";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import firebaseEndpoints from "./firebaseEndpoints.js";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import Joi from "joi";
@@ -652,7 +653,7 @@ app.use(cors({
     console.warn(`[CORS] ❌ Blocked: ${origin}`);
     return callback(new Error('Not allowed by CORS: ' + origin));
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true,
   maxAge: 86400
@@ -779,6 +780,9 @@ app.use((req, res, next) => {
 
 // Apply global rate limiting to all routes
 app.use(globalLimiter);
+
+// ✅ FIREBASE ENDPOINTS: Add secure Firebase operations endpoints
+app.use('/firebase', firebaseEndpoints);
 
 // ✅ ERROR HANDLING FIX: Comprehensive error handling middleware with circuit breakers
 app.use((err, req, res, next) => {
