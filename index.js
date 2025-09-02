@@ -595,14 +595,12 @@ const parseFrontendUrls = () => {
 const allowedOrigins = [
   ...parseFrontendUrls(),
   // Development origins - always allow localhost in development
-  "http://localhost:3001",
-  "http://localhost:3000",
-  // Production origins (only if explicitly set)
-  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [
-  "https://www.myreconfy.com",
+  // Production origins for ReconFY domains
   "https://myreconfy.com",
-  "https://admin.myreconfy.com"
-  ])
+  "https://www.myreconfy.com",
+  "https://admin.myreconfy.com",
+  // Production origins (only if explicitly set)
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [])
 ];
 
 // ✅ MINOR FIX: Log rotation utility function
