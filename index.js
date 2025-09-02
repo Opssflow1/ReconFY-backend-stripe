@@ -1565,32 +1565,7 @@ app.post("/create-checkout-session", authLimiter, validateBody(checkoutSessionSc
   }
 });
 
-// Create billing portal session
-app.post("/create-portal-session", authLimiter, validateBody(Joi.object({
-  customerId: Joi.string().required()
-    .messages({
-      'any.required': 'Customer ID is required for billing portal access'
-    }),
-  returnUrl: Joi.string().uri().required()
-    .messages({
-      'string.uri': 'Return URL must be a valid URL',
-      'any.required': 'Return URL is required'
-    })
-})), cognitoAuthenticate, async (req, res) => {
-  const { customerId, returnUrl } = req.body;
-  
-  try {
-    const session = await stripe.billingPortal.sessions.create({
-      customer: customerId,
-      return_url: returnUrl,
-    });
-    
-    res.json({ url: session.url });
-  } catch (err) {
-    console.error("Error creating portal session:", err);
-    res.status(400).json({ error: err.message });
-  }
-});
+
 
 // Verify payment and update subscription
 app.post("/verify-payment", authLimiter, validateBody(Joi.object({
