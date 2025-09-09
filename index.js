@@ -195,6 +195,7 @@ const analyticsSchema = Joi.object({
   metadata: Joi.object().optional(),
   // Add missing fields that frontend sends:
   verificationResults: Joi.object().optional(),
+  verificationTable: Joi.array().optional(),
   promoOrders: Joi.object().optional(),
   analysisDate: Joi.string().isoDate().optional(),
   // NEW: Location tracking fields for proper analytics-location relationship
@@ -2061,6 +2062,7 @@ app.post('/analytics', globalLimiter, validateBody(analyticsSchema), cognitoAuth
       filesProcessed,
       metadata,
       verificationResults,
+      verificationTable,
       promoOrders,
       analysisDate,
       // NEW: Location tracking fields
@@ -2149,6 +2151,7 @@ app.post('/analytics', globalLimiter, validateBody(analyticsSchema), cognitoAuth
       totalRevenue: typeof totalRevenue === 'number' ? totalRevenue : null,
       filesProcessed: typeof filesProcessed === 'number' ? filesProcessed : null,
       verificationResults: verificationResults || {},
+      verificationTable: verificationTable || [],
       promoOrders: promoOrders || {},
       // ✅ DATA INTEGRITY FIX: Use validated location references
       locationIds: validatedLocationIds,
@@ -2242,6 +2245,35 @@ app.get('/admin/analytics/:userId', adminLimiter, cognitoAuthenticate, validateB
   } catch (err) {
     console.error('[DEBUG] Error fetching user analytics (admin):', err);
     return res.status(500).json({ error: 'Failed to fetch user analytics' });
+  }
+});
+
+// Delete specific analytics record (simplified - userId from JWT)
+app.delete('/analytics/:analyticsId', globalLimiter, cognitoAuthenticate, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+    const { analyticsId } = req.params;
+    
+    // Check if the analytics record exists and belongs to the user
+    const analyticsSnap = await db.ref(`analytics/${userId}/${analyticsId}`).once('value');
+    if (!analyticsSnap.exists()) {
+      return res.status(404).json({ error: 'Analytics record not found' });
+    }
+    
+    // Delete the analytics record
+    await db.ref(`analytics/${userId}/${analyticsId}`).remove();
+    
+    console.log(`[DELETE] Deleted analytics record ${analyticsId} for user ${userId}`);
+    
+    return res.json({ 
+      success: true,
+      message: 'Analytics record deleted successfully',
+      analyticsId
+    });
+    
+  } catch (err) {
+    console.error('[DELETE] Error deleting analytics record:', err);
+    return res.status(500).json({ error: 'Failed to delete analytics record' });
   }
 });
 

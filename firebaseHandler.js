@@ -626,13 +626,54 @@ class FirebaseHandler {
         throw new Error('Location not found');
       }
 
-      // Hard delete the location from database
+      const tspId = locationToDelete.tspId;
+      
+      // Step 1: Delete associated analytics for this location
+      const analyticsSnap = await this.db.ref(`analytics/${userId}`).once('value');
+      let deletedAnalyticsCount = 0;
+      
+      if (analyticsSnap.exists()) {
+        const analytics = analyticsSnap.val();
+        const analyticsToDelete = [];
+        
+        // Find analytics that reference this location or TSP ID
+        Object.entries(analytics).forEach(([analyticsId, analyticsData]) => {
+          const shouldDelete = 
+            (analyticsData.locationIds && analyticsData.locationIds.includes(locationId)) ||
+            (analyticsData.tspIds && analyticsData.tspIds.includes(tspId)) ||
+            (analyticsData.primaryLocationId === locationId) ||
+            (analyticsData.primaryTspId === tspId);
+          
+          if (shouldDelete) {
+            analyticsToDelete.push(analyticsId);
+          }
+        });
+        
+        // Use batch operation for atomic deletion
+        if (analyticsToDelete.length > 0) {
+          const updates = {};
+          analyticsToDelete.forEach(analyticsId => {
+            updates[`analytics/${userId}/${analyticsId}`] = null; // null = delete
+          });
+          
+          await this.db.ref().update(updates);
+          deletedAnalyticsCount = analyticsToDelete.length;
+          console.log(`[TRANSACTION] Deleted ${deletedAnalyticsCount} analytics for location ${locationId}`);
+        }
+      }
+
+      // Step 2: Delete the location from database
       const locationRef = this.db.ref(`users/${userId}/locations/${locationId}`);
       await locationRef.remove();
       
       return {
         success: true,
-        message: 'Location and associated analytics data deleted successfully'
+        message: 'Location and associated analytics data deleted successfully',
+        details: {
+          locationId,
+          tspId,
+          deletedAnalyticsCount
+        }
       };
     } catch (error) {
       throw error;
