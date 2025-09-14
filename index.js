@@ -550,16 +550,8 @@ const s3Client = new S3Client({
   }
 });
 
-// ✅ SECURITY FIX: Enhanced file upload configuration with validation
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
-});
+// ✅ ENTERPRISE FIX: Use memory storage for better performance and security
+const storage = multer.memoryStorage();
 
 // File filter for security - Updated for expense attachments
 const fileFilter = (req, file, cb) => {
@@ -595,8 +587,7 @@ const upload = multer({
   }
 });
 
-// Ensure uploads directory exists
-fs.ensureDirSync('uploads');
+// ✅ ENTERPRISE FIX: No need for uploads directory with memory storage
 
 // ✅ S3 UTILITY FUNCTIONS FOR EXPENSE ATTACHMENTS
 
@@ -607,10 +598,11 @@ const uploadToS3 = async (file, s3Key) => {
     console.log('S3_BUCKET_NAME:', process.env.S3_BUCKET_NAME);
     console.log('AWS_REGION:', process.env.AWS_REGION);
     console.log('AWS_ACCESS_KEY_ID:', process.env.AWS_ACCESS_KEY_ID ? 'Set' : 'Missing');
-    console.log('File path:', file.path);
+    console.log('File buffer size:', file.buffer ? file.buffer.length : 'No buffer');
     console.log('S3 Key:', s3Key);
     
-    const fileContent = await fs.readFile(file.path);
+    // ✅ ENTERPRISE FIX: Use file.buffer instead of reading from disk
+    const fileContent = file.buffer;
     
     const uploadParams = {
       Bucket: process.env.S3_BUCKET_NAME,
@@ -626,9 +618,7 @@ const uploadToS3 = async (file, s3Key) => {
     const command = new PutObjectCommand(uploadParams);
     await s3Client.send(command);
     
-    // Clean up local file
-    await fs.remove(file.path);
-    
+    // ✅ ENTERPRISE FIX: No cleanup needed with memory storage
     console.log('S3 upload successful:', s3Key);
     return {
       success: true,
@@ -919,7 +909,8 @@ app.post('/firebase/expenses/upload', cognitoAuthenticate, requireActiveSubscrip
 
     // Generate S3 key
     const fileExtension = path.extname(file.originalname);
-    const s3Key = `expenses/${userId}/${locationId}/${monthYear}/${file.filename}`;
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const s3Key = `expenses/${userId}/${locationId}/${monthYear}/file-${uniqueSuffix}${fileExtension}`;
 
     // Upload to S3
     const uploadResult = await uploadToS3(file, s3Key);
@@ -936,6 +927,8 @@ app.post('/firebase/expenses/upload', cognitoAuthenticate, requireActiveSubscrip
     res.json(attachmentData);
   } catch (error) {
     console.error('Attachment upload error:', error);
+    // ✅ ENTERPRISE FIX: No cleanup needed with memory storage
+    // File is automatically freed from memory on error
     res.status(500).json({ error: error.message });
   }
 });
