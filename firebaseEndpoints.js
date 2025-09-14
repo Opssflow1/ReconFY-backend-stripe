@@ -8,8 +8,36 @@ import express from 'express';
 import firebaseHandler from './firebaseHandler.js';
 import cognitoAuthenticate from './cognitoAuth.js';
 import { requireActiveSubscription } from './subscriptionAuth.js';
+import Joi from 'joi';
+import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema } from './schemas.js';
 
 const router = express.Router();
+
+// ✅ Schemas are now imported from schemas.js to avoid duplication
+
+// Validation middleware
+const validateBody = (schema) => {
+  return (req, res, next) => {
+    const { error } = schema.validate(req.body);
+    if (error) {
+      console.error('🔍 VALIDATION ERROR:', {
+        path: req.path,
+        method: req.method,
+        body: req.body,
+        errors: error.details.map(d => ({
+          field: d.path.join('.'),
+          message: d.message,
+          value: d.context?.value
+        }))
+      });
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: error.details.map(d => d.message)
+      });
+    }
+    next();
+  };
+};
 
 // --- PUBLIC ENDPOINTS (No authentication required) ---
 
@@ -526,6 +554,186 @@ router.get('/users/tier/:tier', async (req, res) => {
     const { tier } = req.params;
     const users = await firebaseHandler.getUsersBySubscriptionTier(tier);
     res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- EXPENSE OPERATIONS ENDPOINTS ---
+
+// Add expense to specific location-month
+router.post('/expenses/:userId/:locationId/:monthYear', requireActiveSubscription, validateBody(expenseSchema), async (req, res) => {
+  try {
+    const { userId, locationId, monthYear } = req.params;
+    const expenseData = req.body;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only manage your own expenses' });
+    }
+
+    const result = await firebaseHandler.addExpense(userId, locationId, monthYear, expenseData);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get monthly expenses for specific location
+router.get('/expenses/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId, locationId, monthYear } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only view your own expenses' });
+    }
+
+    const result = await firebaseHandler.getLocationMonthlyExpenses(userId, locationId, monthYear);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update expense in location-month
+router.patch('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActiveSubscription, validateBody(expenseSchema), async (req, res) => {
+  try {
+    const { userId, locationId, monthYear, expenseId } = req.params;
+    const updates = req.body;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only update your own expenses' });
+    }
+
+    const result = await firebaseHandler.updateExpense(userId, locationId, monthYear, expenseId, updates);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete expense from location-month
+router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId, locationId, monthYear, expenseId } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only delete your own expenses' });
+    }
+
+    const result = await firebaseHandler.deleteExpense(userId, locationId, monthYear, expenseId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Import CSV expenses to location-month
+router.post('/expenses/:userId/:locationId/:monthYear/import', requireActiveSubscription, validateBody(expenseImportSchema), async (req, res) => {
+  try {
+    const { userId, locationId, monthYear } = req.params;
+    const { expenses } = req.body;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only import expenses for your own account' });
+    }
+
+    const result = await firebaseHandler.importExpenses(userId, locationId, monthYear, expenses);
+    res.status(201).json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- MONTHLY SUMMARY ENDPOINTS ---
+
+// Get location monthly summary
+router.get('/monthly-summary/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId, locationId, monthYear } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only view your own summaries' });
+    }
+
+    const result = await firebaseHandler.getLocationMonthlySummary(userId, locationId, monthYear);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all monthly summaries for user
+router.get('/monthly-summary/:userId', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only view your own summaries' });
+    }
+
+    const result = await firebaseHandler.getAllLocationMonthlySummaries(userId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Calculate monthly summary
+router.post('/monthly-summary/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId, locationId, monthYear } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only calculate summaries for your own account' });
+    }
+
+    const result = await firebaseHandler.calculateMonthlySummary(userId, locationId, monthYear);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- EXPENSE CATEGORIES ENDPOINTS ---
+
+// Get expense categories for user
+router.get('/expense-categories/:userId', requireActiveSubscription, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only view your own categories' });
+    }
+
+    const result = await firebaseHandler.getUserExpenseCategories(userId);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add custom expense category
+router.post('/expense-categories/:userId', requireActiveSubscription, validateBody(expenseCategorySchema), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { category } = req.body;
+    
+    // Validate user ownership
+    if (req.user.sub !== userId) {
+      return res.status(403).json({ error: 'Access denied: You can only manage your own categories' });
+    }
+
+    const result = await firebaseHandler.addExpenseCategory(userId, category);
+    res.status(201).json(result);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

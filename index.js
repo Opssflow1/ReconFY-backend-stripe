@@ -10,10 +10,13 @@ import admin from "firebase-admin";
 import { CognitoIdentityProviderClient, AdminDeleteUserCommand } from "@aws-sdk/client-cognito-identity-provider";
 import ImmutableAuditLogger from "./auditLogger.js";
 import { SESClient, SendEmailCommand } from "@aws-sdk/client-ses";
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import firebaseEndpoints from "./firebaseEndpoints.js";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import Joi from "joi";
+import { expenseSchema, monthlySummarySchema, userSchema } from "./schemas.js";
 import multer from "multer";
 import path from "path";
 import fs from "fs-extra";
@@ -43,7 +46,8 @@ const requiredEnvVars = [
   'AWS_SECRET_ACCESS_KEY',
   'COGNITO_REGION',
   'COGNITO_USER_POOL_ID',
-  'SES_FROM_EMAIL'
+  'SES_FROM_EMAIL',
+  'S3_BUCKET_NAME'
 ];
 
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
@@ -205,6 +209,21 @@ const analyticsSchema = Joi.object({
   primaryTspId: Joi.string().optional()
 });
 
+// ✅ NEW: Expense validation schemas
+// expenseSchema now imported from schemas.js
+
+// monthlySummarySchema now imported from schemas.js
+
+const expenseImportSchema = Joi.object({
+  expenses: Joi.array().items(expenseSchema).min(1).max(1000).required()
+    .messages({ 'array.min': 'At least one expense is required' })
+});
+
+const expenseCategorySchema = Joi.object({
+  category: Joi.string().min(1).max(100).required()
+    .messages({ 'string.min': 'Category name is required' })
+});
+
 // Validation middleware
 const validateBody = (schema) => {
   return (req, res, next) => {
@@ -240,7 +259,7 @@ const validateQuery = (schema) => {
 // Global rate limiter for all endpoints
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 200, // limit each IP to 100 requests per 15 minutes
+  max: 1000, // limit each IP to 1000 requests per 15 minutes (5x increase)
   message: { error: 'Too many requests from this IP, please try again later.' },
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
@@ -256,7 +275,7 @@ const globalLimiter = rateLimit({
 // Stricter rate limiting for authentication endpoints
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 authentication attempts per 15 minutes
+  max: 20, // limit each IP to 20 authentication attempts per 15 minutes (4x increase)
   message: { error: 'Too many authentication attempts, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -272,7 +291,7 @@ const authLimiter = rateLimit({
 // Rate limiting for contact form submissions
 const contactLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 3, // limit each IP to 3 contact submissions per hour
+  max: 10, // limit each IP to 10 contact submissions per hour (3x increase)
   message: { error: 'Too many contact form submissions, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -522,6 +541,15 @@ const cognitoClient = new CognitoIdentityProviderClient({
   }
 });
 
+// Initialize S3 client for file storage
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION,
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+});
+
 // ✅ SECURITY FIX: Enhanced file upload configuration with validation
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -533,15 +561,16 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter for security
+// File filter for security - Updated for expense attachments
 const fileFilter = (req, file, cb) => {
-  // ✅ SECURITY: Only allow PDF files
-  if (file.mimetype !== 'application/pdf') {
-    return cb(new Error('Only PDF files are allowed'), false);
+  // ✅ SECURITY: Allow PDF, JPG, PNG files for expense receipts
+  const allowedMimeTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+  if (!allowedMimeTypes.includes(file.mimetype)) {
+    return cb(new Error('Only PDF, JPG, and PNG files are allowed'), false);
   }
   
   // ✅ SECURITY: Check file extension
-  const allowedExtensions = ['.pdf'];
+  const allowedExtensions = ['.pdf', '.jpg', '.jpeg', '.png'];
   const fileExtension = path.extname(file.originalname).toLowerCase();
   if (!allowedExtensions.includes(fileExtension)) {
     return cb(new Error('Invalid file extension'), false);
@@ -568,6 +597,97 @@ const upload = multer({
 
 // Ensure uploads directory exists
 fs.ensureDirSync('uploads');
+
+// ✅ S3 UTILITY FUNCTIONS FOR EXPENSE ATTACHMENTS
+
+// Upload file to S3
+const uploadToS3 = async (file, s3Key) => {
+  try {
+    // Debug: Check environment variables
+    console.log('S3_BUCKET_NAME:', process.env.S3_BUCKET_NAME);
+    console.log('AWS_REGION:', process.env.AWS_REGION);
+    console.log('AWS_ACCESS_KEY_ID:', process.env.AWS_ACCESS_KEY_ID ? 'Set' : 'Missing');
+    console.log('File path:', file.path);
+    console.log('S3 Key:', s3Key);
+    
+    const fileContent = await fs.readFile(file.path);
+    
+    const uploadParams = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: s3Key,
+      Body: fileContent,
+      ContentType: file.mimetype,
+      Metadata: {
+        originalName: file.originalname,
+        uploadedAt: new Date().toISOString()
+      }
+    };
+
+    const command = new PutObjectCommand(uploadParams);
+    await s3Client.send(command);
+    
+    // Clean up local file
+    await fs.remove(file.path);
+    
+    console.log('S3 upload successful:', s3Key);
+    return {
+      success: true,
+      s3Key,
+      bucket: process.env.S3_BUCKET_NAME,
+      region: process.env.AWS_REGION
+    };
+  } catch (error) {
+    console.error('S3 upload error details:', {
+      message: error.message,
+      code: error.code,
+      statusCode: error.$metadata?.httpStatusCode,
+      bucket: process.env.S3_BUCKET_NAME,
+      region: process.env.AWS_REGION,
+      s3Key
+    });
+    throw new Error(`Failed to upload file to S3: ${error.message}`);
+  }
+};
+
+// Delete file from S3
+const deleteFromS3 = async (s3Key) => {
+  try {
+    const deleteParams = {
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: s3Key
+    };
+
+    const command = new DeleteObjectCommand(deleteParams);
+    await s3Client.send(command);
+    
+    return { success: true };
+  } catch (error) {
+    console.error('S3 delete error:', error);
+    throw new Error('Failed to delete file from S3');
+  }
+};
+
+// Generate signed URL for file access
+const generateSignedUrl = async (s3Key, expirationSeconds = 300) => {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: s3Key
+    });
+
+    const signedUrl = await getSignedUrl(s3Client, command, { 
+      expiresIn: expirationSeconds 
+    });
+    
+    return signedUrl;
+  } catch (error) {
+    console.error('S3 signed URL error:', error);
+    throw new Error('Failed to generate signed URL');
+  }
+};
+
+// Export S3 functions for use in other modules
+export { uploadToS3, deleteFromS3, generateSignedUrl };
 
 // Safe parsing of FRONTEND_URL environment variable
 const parseFrontendUrls = () => {
@@ -779,6 +899,110 @@ app.use((req, res, next) => {
 
 // Apply global rate limiting to all routes
 app.use(globalLimiter);
+
+// ✅ EXPENSE ATTACHMENT ENDPOINTS
+
+// Upload expense attachment
+app.post('/firebase/expenses/upload', cognitoAuthenticate, requireActiveSubscription, upload.single('file'), async (req, res) => {
+  try {
+    const { locationId, monthYear } = req.body;
+    const { sub: userId } = req.user;
+    const file = req.file;
+    
+    if (!file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    if (!locationId || !monthYear) {
+      return res.status(400).json({ error: 'Location ID and month-year are required' });
+    }
+
+    // Generate S3 key
+    const fileExtension = path.extname(file.originalname);
+    const s3Key = `expenses/${userId}/${locationId}/${monthYear}/${file.filename}`;
+
+    // Upload to S3
+    const uploadResult = await uploadToS3(file, s3Key);
+
+    const attachmentData = {
+      fileName: file.originalname,
+      fileSize: file.size,
+      mimeType: file.mimetype,
+      s3Key: s3Key,
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: userId
+    };
+
+    res.json(attachmentData);
+  } catch (error) {
+    console.error('Attachment upload error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get signed URL for attachment
+app.get('/firebase/expenses/attachment/:s3Key', cognitoAuthenticate, requireActiveSubscription, async (req, res) => {
+  try {
+    const { s3Key } = req.params;
+    const { sub: userId } = req.user;
+    
+    // Decode the S3 key
+    const decodedS3Key = decodeURIComponent(s3Key);
+    
+    // Extract user ID from S3 key for validation
+    const keyParts = decodedS3Key.split('/');
+    if (keyParts.length < 4 || keyParts[1] !== userId) {
+      return res.status(403).json({ error: 'Access denied: Invalid file path' });
+    }
+
+    // Generate signed URL (5 minutes for non-owners, 24 hours for owners)
+    const userRole = req.user.role || 'user';
+    const expirationTime = userRole === 'owner' ? 24 * 60 * 60 : 5 * 60; // seconds
+    const signedUrl = await generateSignedUrl(decodedS3Key, expirationTime);
+    
+    res.json({ signedUrl });
+  } catch (error) {
+    console.error('Signed URL generation error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete attachment
+app.delete('/firebase/expenses/attachment/:s3Key', cognitoAuthenticate, requireActiveSubscription, async (req, res) => {
+  try {
+    const { s3Key } = req.params;
+    const { sub: userId } = req.user;
+    
+    // Decode the S3 key
+    const decodedS3Key = decodeURIComponent(s3Key);
+    
+    // Extract user ID from S3 key for validation
+    const keyParts = decodedS3Key.split('/');
+    if (keyParts.length < 4 || keyParts[1] !== userId) {
+      return res.status(403).json({ error: 'Access denied: Invalid file path' });
+    }
+
+    // Delete from S3
+    await deleteFromS3(decodedS3Key);
+    
+    res.json({ success: true, message: 'Attachment deleted successfully' });
+  } catch (error) {
+    console.error('Attachment deletion error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ✅ DEBUG: Add validation debugging middleware
+app.use('/firebase/expenses/:userId/:locationId/:monthYear', (req, res, next) => {
+  if (req.method === 'POST') {
+    console.log('🔍 DEBUG: Expense data being validated:', {
+      body: req.body,
+      hasAttachment: !!req.body.attachment,
+      attachmentData: req.body.attachment
+    });
+  }
+  next();
+});
 
 // ✅ FIREBASE ENDPOINTS: Add secure Firebase operations endpoints
 app.use('/firebase', firebaseEndpoints);

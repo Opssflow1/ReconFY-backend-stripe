@@ -990,6 +990,407 @@ class FirebaseHandler {
       return [];
     }
   }
+
+  // --- EXPENSE OPERATIONS ---
+
+  // Add expense to specific location-month
+  async addExpense(userId, locationId, monthYear, expenseData) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      // Generate unique expense ID
+      const expenseId = this.db.ref().push().key;
+      const now = new Date().toISOString();
+
+      // Create expense record
+      const expense = {
+        id: expenseId,
+        userId,
+        locationId,
+        monthYear,
+        date: expenseData.date,
+        category: expenseData.category.trim(),
+        vendor: expenseData.vendor.trim(),
+        amount: parseFloat(expenseData.amount),
+        paymentMethod: expenseData.paymentMethod.trim(),
+        notes: expenseData.notes ? expenseData.notes.trim() : '',
+        // NEW: Include attachment if provided
+        attachment: expenseData.attachment || null,
+        createdAt: now,
+        updatedAt: now
+      };
+
+      // Store expense
+      await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).set(expense);
+
+      // Update monthly summary
+      const monthlySummary = await this.calculateMonthlySummary(userId, locationId, monthYear);
+
+      return {
+        success: true,
+        expense,
+        monthlyData: {
+          locationId,
+          month: monthYear,
+          expenses: { [expenseId]: expense },
+          monthlyTotals: monthlySummary
+        },
+        monthlyTotals: monthlySummary
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Get monthly expenses for specific location
+  async getLocationMonthlyExpenses(userId, locationId, monthYear) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      // Fetch expenses
+      const expensesSnap = await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}`).once('value');
+      const expenses = expensesSnap.val() || {};
+
+      // Calculate monthly totals
+      const monthlyTotals = await this.calculateMonthlySummary(userId, locationId, monthYear);
+
+      return {
+        locationId,
+        month: monthYear,
+        expenses,
+        monthlyTotals
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Update expense in location-month
+  async updateExpense(userId, locationId, monthYear, expenseId, updates) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      // Check if expense exists
+      const expenseSnap = await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).once('value');
+      if (!expenseSnap.exists()) {
+        throw new Error('Expense not found');
+      }
+
+      const existingExpense = expenseSnap.val();
+      const now = new Date().toISOString();
+
+      // Update expense
+      const updatedExpense = {
+        ...existingExpense,
+        ...updates,
+        updatedAt: now
+      };
+
+      await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).set(updatedExpense);
+
+      // Recalculate monthly summary
+      const monthlyTotals = await this.calculateMonthlySummary(userId, locationId, monthYear);
+
+      return {
+        success: true,
+        expense: updatedExpense,
+        monthlyTotals
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Delete expense from location-month
+  async deleteExpense(userId, locationId, monthYear, expenseId) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      // Check if expense exists
+      const expenseSnap = await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).once('value');
+      if (!expenseSnap.exists()) {
+        throw new Error('Expense not found');
+      }
+
+      const expense = expenseSnap.val();
+      
+      // NEW: Delete attachment from S3 if exists
+      if (expense.attachment && expense.attachment.s3Key) {
+        try {
+          // Import S3 functions from main index.js
+          const { deleteFromS3 } = await import('./index.js');
+          await deleteFromS3(expense.attachment.s3Key);
+          console.log(`✅ Deleted attachment from S3: ${expense.attachment.s3Key}`);
+        } catch (s3Error) {
+          console.error('❌ Failed to delete attachment from S3:', s3Error);
+          // Continue with expense deletion even if S3 deletion fails
+        }
+      }
+
+      // Delete expense
+      await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).remove();
+
+      // Recalculate monthly summary
+      const monthlyTotals = await this.calculateMonthlySummary(userId, locationId, monthYear);
+
+      return {
+        success: true,
+        monthlyTotals
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Import CSV expenses to location-month
+  async importExpenses(userId, locationId, monthYear, expensesArray) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      const now = new Date().toISOString();
+      const importedExpenses = {};
+      let importedCount = 0;
+      let failedCount = 0;
+      const errors = [];
+
+      // Process each expense
+      for (let i = 0; i < expensesArray.length; i++) {
+        try {
+          const expenseData = expensesArray[i];
+          const expenseId = this.db.ref().push().key;
+
+          const expense = {
+            id: expenseId,
+            userId,
+            locationId,
+            monthYear,
+            date: expenseData.date,
+            category: expenseData.category.trim(),
+            vendor: expenseData.vendor.trim(),
+            amount: parseFloat(expenseData.amount),
+            paymentMethod: expenseData.paymentMethod.trim(),
+            notes: expenseData.notes ? expenseData.notes.trim() : '',
+            createdAt: now,
+            updatedAt: now
+          };
+
+          // Store expense
+          await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}/${expenseId}`).set(expense);
+          importedExpenses[expenseId] = expense;
+          importedCount++;
+        } catch (error) {
+          failedCount++;
+          errors.push({
+            row: i + 1,
+            error: error.message,
+            data: expensesArray[i]
+          });
+        }
+      }
+
+      // Recalculate monthly summary
+      const monthlyTotals = await this.calculateMonthlySummary(userId, locationId, monthYear);
+
+      return {
+        success: true,
+        imported: importedCount,
+        failed: failedCount,
+        errors,
+        monthlyData: {
+          locationId,
+          month: monthYear,
+          expenses: importedExpenses,
+          monthlyTotals
+        },
+        monthlyTotals
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Calculate monthly summary for location
+  async calculateMonthlySummary(userId, locationId, monthYear) {
+    try {
+      // Fetch all expenses for the month
+      const expensesSnap = await this.db.ref(`expenses/${userId}/${locationId}/${monthYear}`).once('value');
+      const expenses = expensesSnap.val() || {};
+
+      // Calculate totals
+      let totalExpenses = 0;
+      const expensesByCategory = {};
+      const transactionCount = Object.keys(expenses).length;
+
+      Object.values(expenses).forEach(expense => {
+        totalExpenses += expense.amount || 0;
+        const category = expense.category || 'Uncategorized';
+        expensesByCategory[category] = (expensesByCategory[category] || 0) + (expense.amount || 0);
+      });
+
+      // Get revenue from analytics (if available)
+      let totalRevenue = 0;
+      try {
+        const analyticsSnap = await this.db.ref(`analytics/${userId}`).once('value');
+        if (analyticsSnap.exists()) {
+          const analytics = analyticsSnap.val();
+          Object.values(analytics).forEach(analysis => {
+            // Check if this analysis is for the same month and location
+            const analysisDate = new Date(analysis.analysisDate);
+            const analysisMonth = `${analysisDate.getFullYear()}-${String(analysisDate.getMonth() + 1).padStart(2, '0')}`;
+            
+            if (analysisMonth === monthYear && 
+                (analysis.locationIds?.includes(locationId) || analysis.primaryLocationId === locationId)) {
+              totalRevenue += analysis.totalRevenue || 0;
+            }
+          });
+        }
+      } catch (error) {
+        console.warn('Could not fetch revenue data:', error.message);
+      }
+
+      const netProfit = totalRevenue - totalExpenses;
+      const now = new Date().toISOString();
+
+      // Store/update monthly summary
+      const summary = {
+        userId,
+        locationId,
+        monthYear,
+        totalRevenue,
+        totalExpenses,
+        netProfit,
+        expensesByCategory,
+        transactionCount,
+        lastUpdated: now
+      };
+
+      await this.db.ref(`monthly-summaries/${userId}/${locationId}/${monthYear}`).set(summary);
+
+      return summary;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Get location monthly summary
+  async getLocationMonthlySummary(userId, locationId, monthYear) {
+    try {
+      // Validate user ownership
+      const userLocations = await this.getUserLocations(userId);
+      const location = userLocations.find(loc => loc.id === locationId);
+      if (!location) {
+        throw new Error('Location not found or access denied');
+      }
+
+      // Try to get existing summary first
+      const summarySnap = await this.db.ref(`monthly-summaries/${userId}/${locationId}/${monthYear}`).once('value');
+      if (summarySnap.exists()) {
+        return summarySnap.val();
+      }
+
+      // Calculate summary if it doesn't exist
+      return await this.calculateMonthlySummary(userId, locationId, monthYear);
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Get all monthly summaries for user
+  async getAllLocationMonthlySummaries(userId) {
+    try {
+      const summariesSnap = await this.db.ref(`monthly-summaries/${userId}`).once('value');
+      return summariesSnap.val() || {};
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Get expense categories for user
+  async getUserExpenseCategories(userId) {
+    try {
+      const categoriesSnap = await this.db.ref(`expense-categories/${userId}`).once('value');
+      if (categoriesSnap.exists()) {
+        return categoriesSnap.val();
+      }
+
+      // Return default categories if none exist
+      const defaultCategories = {
+        categories: [
+          'Office Supplies', 'Utilities', 'Marketing', 'Fuel/Transport',
+          'Equipment', 'Maintenance', 'Insurance', 'Professional Services',
+          'Rent', 'Software', 'Travel', 'Meals', 'Other'
+        ],
+        customCategories: [],
+        lastUpdated: new Date().toISOString()
+      };
+
+      // Store default categories
+      await this.db.ref(`expense-categories/${userId}`).set(defaultCategories);
+      return defaultCategories;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  // Add custom expense category
+  async addExpenseCategory(userId, category) {
+    try {
+      const categoriesSnap = await this.db.ref(`expense-categories/${userId}`).once('value');
+      let categories = categoriesSnap.val();
+
+      if (!categories) {
+        categories = {
+          categories: [
+            'Office Supplies', 'Utilities', 'Marketing', 'Fuel/Transport',
+            'Equipment', 'Maintenance', 'Insurance', 'Professional Services',
+            'Rent', 'Software', 'Travel', 'Meals', 'Other'
+          ],
+          customCategories: [],
+          lastUpdated: new Date().toISOString()
+        };
+      }
+
+      // Add to custom categories if not already exists
+      if (!categories.categories.includes(category) && !categories.customCategories.includes(category)) {
+        categories.customCategories.push(category);
+        categories.lastUpdated = new Date().toISOString();
+
+        await this.db.ref(`expense-categories/${userId}`).set(categories);
+      }
+
+      return {
+        success: true,
+        categories: [...categories.categories, ...categories.customCategories]
+      };
+    } catch (error) {
+      throw error;
+    }
+  }
 }
 
 // Create singleton instance

@@ -2,10 +2,11 @@ module.exports = {
   apps: [{
     name: 'opss-backend',
     script: 'index.js',
-    instances: 1,
+    instances: 'max',  // Use all CPU cores for clustering
+    exec_mode: 'cluster',  // Enable clustering mode
     autorestart: true,
     watch: false,
-    max_memory_restart: '1G',
+    max_memory_restart: '2G',  // Increased memory limit
     env: {
       NODE_ENV: 'production',
       PORT: 3000
@@ -17,6 +18,11 @@ module.exports = {
     log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
     merge_logs: true,
     max_restarts: 10,
-    min_uptime: '10s'
+    min_uptime: '10s',
+    // Performance optimizations
+    listen_timeout: 10000,
+    kill_timeout: 5000,
+    health_check_grace_period: 3000,
+    health_check_interval: 30000
   }]
 };
