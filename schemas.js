@@ -19,15 +19,18 @@ export const expenseSchema = Joi.object({
     .messages({ 'string.min': 'Payment method is required' }),
   notes: Joi.string().max(500).optional()
     .messages({ 'string.max': 'Notes must be less than 500 characters' }),
-  // Attachment fields
-  attachment: Joi.object({
-    fileName: Joi.string().required(),
-    fileSize: Joi.number().positive().max(10485760).required(), // 10MB max
-    mimeType: Joi.string().valid('application/pdf', 'image/jpeg', 'image/png').required(),
-    s3Key: Joi.string().required(),
-    uploadedAt: Joi.string().isoDate().required(),
-    uploadedBy: Joi.string().required()
-  }).optional()
+  // Attachment fields - allow object, null, undefined, or empty string
+  attachment: Joi.alternatives().try(
+    Joi.object({
+      fileName: Joi.string().required(),
+      fileSize: Joi.number().positive().max(10485760).required(), // 10MB max
+      mimeType: Joi.string().valid('application/pdf', 'image/jpeg', 'image/png').required(),
+      s3Key: Joi.string().required(),
+      uploadedAt: Joi.string().isoDate().required(),
+      uploadedBy: Joi.string().required()
+    }),
+    Joi.allow(null, undefined, "") // Allow null, undefined, or empty string when no file
+  ).optional()
 });
 
 // Monthly summary validation schema
