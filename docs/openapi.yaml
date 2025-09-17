@@ -1,0 +1,1216 @@
+openapi: 3.0.3
+info:
+  title: ReconFY Backend API
+  description: |
+    **ReconFY Backend API** - Comprehensive financial analysis SaaS platform with subscription management,
+    document processing, expense tracking, and administrative capabilities.
+
+    ## Features
+    - 🔐 AWS Cognito JWT Authentication
+    - 💳 Stripe Subscription Management
+    - 📊 Financial Analytics & TSP ID Extraction
+    - 📞 Customer Support & Ticketing
+    - 🏢 Enterprise Admin Panel
+    - 🗄️ Firebase Real-time Database
+    - 📄 PDF Document Processing
+
+    ## Authentication
+    Most endpoints require a Bearer token obtained from AWS Cognito:
+    ```
+    Authorization: Bearer <jwt-token>
+    ```
+
+    ## Rate Limiting
+    - Global: 5000 requests per 15 minutes
+    - Auth endpoints: 50 requests per 15 minutes
+    - Contact form: 25 requests per hour
+    - Webhooks: 500 requests per minute
+    - Admin endpoints: 1000 requests per 15 minutes
+  version: 1.0.0
+  contact:
+    name: Your Company Support
+    email: support@yourdomain.com
+    url: https://yourdomain.com
+  license:
+    name: Proprietary
+    url: https://yourdomain.com/license
+
+servers:
+  - url: https://api.yourdomain.com
+    description: Production server
+  - url: http://localhost:8080
+    description: Development server
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Health
+    description: System health and status
+  - name: Authentication
+    description: User authentication and subscription validation
+  - name: Subscriptions
+    description: Stripe subscription and billing management
+  - name: Analytics
+    description: Financial analytics and data management
+  - name: Contact
+    description: Customer support and ticketing system
+  - name: Document Processing
+    description: PDF processing and TSP ID extraction
+  - name: Firebase
+    description: Database operations and data management
+  - name: Admin
+    description: Administrative functions and system management
+  - name: Webhooks
+    description: Stripe webhook handling
+
+paths:
+  /:
+    get:
+      tags: [Health]
+      summary: Health check endpoint
+      description: Returns system status and service connectivity information
+      parameters:
+        - name: detailed
+          in: query
+          description: Include detailed service checks
+          schema:
+            type: boolean
+            default: false
+        - name: logRotation
+          in: query
+          description: Include log rotation statistics
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: System is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: System is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /subscription/me:
+    get:
+      tags: [Authentication]
+      summary: Get current user's subscription
+      description: Retrieve subscription details for the authenticated user
+      parameters:
+        - name: includeBilling
+          in: query
+          description: Include billing information
+          schema:
+            type: boolean
+            default: false
+        - name: includeUsage
+          in: query
+          description: Include usage statistics
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Subscription details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionResponse'
+        '404':
+          description: Subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /subscription/validate:
+    get:
+      tags: [Authentication]
+      summary: Validate subscription access
+      description: Validate if user has access to specific features
+      parameters:
+        - name: feature
+          in: query
+          required: true
+          description: Feature to validate access for
+          schema:
+            type: string
+            enum: [profit_analysis, file_upload, reports, charts, locations]
+        - name: locationCount
+          in: query
+          description: Number of locations for validation
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: Access validation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationResponse'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /create-checkout-session:
+    post:
+      tags: [Subscriptions]
+      summary: Create Stripe checkout session
+      description: Create a new Stripe checkout session for subscription purchase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutSessionRequest'
+      responses:
+        '200':
+          description: Checkout session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutSessionResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /verify-payment:
+    post:
+      tags: [Subscriptions]
+      summary: Verify payment completion
+      description: Verify payment completion and update subscription status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyPaymentRequest'
+      responses:
+        '200':
+          description: Payment verified successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentVerificationResponse'
+        '400':
+          description: Payment verification failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /update-subscription-plan:
+    post:
+      tags: [Subscriptions]
+      summary: Update subscription plan
+      description: Upgrade or downgrade user's subscription plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSubscriptionRequest'
+      responses:
+        '200':
+          description: Subscription updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubscriptionUpdateResponse'
+        '400':
+          description: Invalid plan or subscription not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /cancel-subscription:
+    post:
+      tags: [Subscriptions]
+      summary: Cancel subscription
+      description: Cancel user's subscription (effective at period end)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelSubscriptionRequest'
+      responses:
+        '200':
+          description: Subscription cancellation scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Cancellation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /reactivate-subscription:
+    post:
+      tags: [Subscriptions]
+      summary: Reactivate subscription
+      description: Reactivate a cancelled subscription or create new one
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReactivateSubscriptionRequest'
+      responses:
+        '200':
+          description: Subscription reactivation response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReactivationResponse'
+        '400':
+          description: Reactivation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /create-billing-portal-session:
+    post:
+      tags: [Subscriptions]
+      summary: Create billing portal session
+      description: Create Stripe billing portal session for customer self-service
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillingPortalRequest'
+      responses:
+        '200':
+          description: Billing portal session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingPortalResponse'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics:
+    get:
+      tags: [Analytics]
+      summary: Get user analytics
+      description: Retrieve all analytics records for the current user
+      responses:
+        '200':
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AnalyticsRecord'
+        '500':
+          description: Failed to fetch analytics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    post:
+      tags: [Analytics]
+      summary: Create analytics record
+      description: Create a new analytics record for financial analysis
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnalyticsRequest'
+      responses:
+        '200':
+          description: Analytics record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyticsRecord'
+        '500':
+          description: Failed to create analytics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags: [Analytics]
+      summary: Delete all analytics
+      description: Delete all analytics records for the current user
+      responses:
+        '200':
+          description: All analytics deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '500':
+          description: Failed to delete analytics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /analytics/{analyticsId}:
+    delete:
+      tags: [Analytics]
+      summary: Delete specific analytics record
+      description: Delete a specific analytics record by ID
+      parameters:
+        - name: analyticsId
+          in: path
+          required: true
+          description: Analytics record ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Analytics record deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Analytics record not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /contact:
+    post:
+      tags: [Contact]
+      summary: Submit contact inquiry
+      description: Submit a new customer support inquiry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContactInquiryRequest'
+      responses:
+        '200':
+          description: Contact inquiry submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactInquiryResponse'
+        '400':
+          description: Invalid inquiry data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ticket/{ticketNumber}:
+    get:
+      tags: [Contact]
+      summary: Get ticket details
+      description: Retrieve details for a specific support ticket
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          description: Support ticket number
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Ticket details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponse'
+        '404':
+          description: Ticket not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /ticket/{ticketNumber}/reply:
+    post:
+      tags: [Contact]
+      summary: Reply to ticket
+      description: Submit a customer reply to an existing support ticket
+      parameters:
+        - name: ticketNumber
+          in: path
+          required: true
+          description: Support ticket number
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TicketReplyRequest'
+      responses:
+        '200':
+          description: Reply submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid reply or ticket resolved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /extract-tsp-id:
+    post:
+      tags: [Document Processing]
+      summary: Extract TSP ID from PDF
+      description: Extract Transportation Service Provider ID from a single PDF document
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                pdfFile:
+                  type: string
+                  format: binary
+                  description: PDF file to process
+                analysisType:
+                  type: string
+                  enum: [profit_calculation, cost_analysis, revenue_forecast]
+                  description: Type of analysis to perform
+                locationId:
+                  type: string
+                  description: Associated location ID
+              required:
+                - pdfFile
+      responses:
+        '200':
+          description: TSP ID extracted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TspIdExtractionResponse'
+        '404':
+          description: No TSP ID found in PDF
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '400':
+          description: Invalid file or processing error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /extract-tsp-ids-batch:
+    post:
+      tags: [Document Processing]
+      summary: Batch extract TSP IDs
+      description: Extract TSP IDs from multiple PDF documents
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                pdfFiles:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: PDF files to process (max 10)
+                analysisType:
+                  type: string
+                  enum: [profit_calculation, cost_analysis, revenue_forecast]
+                  description: Type of analysis to perform
+              required:
+                - pdfFiles
+      responses:
+        '200':
+          description: Batch processing completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchTspIdResponse'
+        '400':
+          description: Invalid files or processing error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /process-files:
+    post:
+      tags: [Document Processing]
+      summary: Process files for analysis
+      description: Process uploaded files through the analysis backend
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+                  description: Files to process (Excel, CSV, PDF)
+              required:
+                - files
+      responses:
+        '200':
+          description: Files processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileProcessingResponse'
+        '503':
+          description: Processing service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /webhook:
+    post:
+      tags: [Webhooks]
+      summary: Stripe webhook endpoint
+      description: Handle Stripe webhook events (Stripe use only)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw Stripe webhook payload
+      responses:
+        '200':
+          description: Webhook processed successfully
+        '400':
+          description: Invalid webhook signature or payload
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: AWS Cognito JWT token
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ReconFY Backend API"
+        version:
+          type: string
+          example: "1.0.0"
+        timestamp:
+          type: string
+          format: date-time
+        environment:
+          type: string
+          enum: [development, production]
+        uptime:
+          type: number
+          description: Server uptime in seconds
+        memory:
+          type: object
+          description: Memory usage statistics
+        checks:
+          type: object
+          properties:
+            firebase:
+              $ref: '#/components/schemas/ServiceCheck'
+            stripe:
+              $ref: '#/components/schemas/ServiceCheck'
+            awsSes:
+              $ref: '#/components/schemas/ServiceCheck'
+            cognito:
+              $ref: '#/components/schemas/ServiceCheck'
+        overall:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+
+    ServiceCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, unhealthy]
+        message:
+          type: string
+
+    SubscriptionResponse:
+      type: object
+      properties:
+        subscription:
+          $ref: '#/components/schemas/Subscription'
+
+    Subscription:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ACTIVE, CANCELLED, INACTIVE]
+        tier:
+          type: string
+          enum: [STARTER, GROWTH, PRO, ENTERPRISE, TRIAL]
+        startDate:
+          type: string
+          format: date-time
+        endDate:
+          type: string
+          format: date-time
+        stripeCustomerId:
+          type: string
+        stripeSubscriptionId:
+          type: string
+        cancelAtPeriodEnd:
+          type: boolean
+        billing:
+          type: object
+          properties:
+            amount:
+              type: number
+              description: Amount in dollars
+            currency:
+              type: string
+              example: "USD"
+
+    ValidationResponse:
+      type: object
+      properties:
+        hasAccess:
+          type: boolean
+        subscription:
+          type: object
+          properties:
+            status:
+              type: string
+            tier:
+              type: string
+            endDate:
+              type: string
+              format: date-time
+            daysRemaining:
+              type: integer
+            isActive:
+              type: boolean
+
+    CheckoutSessionRequest:
+      type: object
+      required: [userId, planType, userEmail, successUrl, cancelUrl]
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+          minLength: 1
+          maxLength: 100
+        planType:
+          type: string
+          enum: [STARTER, GROWTH, PRO, ENTERPRISE, TRIAL]
+        userEmail:
+          type: string
+          format: email
+        successUrl:
+          type: string
+          format: uri
+        cancelUrl:
+          type: string
+          format: uri
+
+    CheckoutSessionResponse:
+      type: object
+      properties:
+        sessionId:
+          type: string
+        url:
+          type: string
+          format: uri
+
+    VerifyPaymentRequest:
+      type: object
+      required: [userId, sessionId]
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+        sessionId:
+          type: string
+
+    PaymentVerificationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        subscription:
+          $ref: '#/components/schemas/Subscription'
+
+    UpdateSubscriptionRequest:
+      type: object
+      required: [userId, planType]
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+        planType:
+          type: string
+          enum: [STARTER, GROWTH, PRO, ENTERPRISE, TRIAL]
+
+    SubscriptionUpdateResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        subscriptionId:
+          type: string
+        customerId:
+          type: string
+
+    CancelSubscriptionRequest:
+      type: object
+      required: [userId, subscriptionId]
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+        subscriptionId:
+          type: string
+
+    ReactivateSubscriptionRequest:
+      type: object
+      required: [userId]
+      properties:
+        userId:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]+$'
+        planType:
+          type: string
+          enum: [STARTER, GROWTH, PRO, ENTERPRISE, TRIAL]
+        userEmail:
+          type: string
+          format: email
+        successUrl:
+          type: string
+          format: uri
+        cancelUrl:
+          type: string
+          format: uri
+
+    ReactivationResponse:
+      type: object
+      properties:
+        action:
+          type: string
+          enum: [checkout, reactivated, already_active, billing_portal]
+        url:
+          type: string
+          format: uri
+          description: URL for checkout or billing portal
+        message:
+          type: string
+        subscriptionId:
+          type: string
+
+    BillingPortalRequest:
+      type: object
+      required: [customerId]
+      properties:
+        customerId:
+          type: string
+
+    BillingPortalResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        url:
+          type: string
+          format: uri
+
+    CreateAnalyticsRequest:
+      type: object
+      required: [analysisType, totalProfit, totalRevenue, filesProcessed]
+      properties:
+        analysisType:
+          type: string
+          enum: [profit_calculation, cost_analysis, revenue_forecast]
+        profitData:
+          type: object
+        calculationResults:
+          type: object
+        missingRebates:
+          type: object
+        totalProfit:
+          type: number
+          minimum: 0
+        totalRevenue:
+          type: number
+          minimum: 0
+        filesProcessed:
+          type: integer
+          minimum: 0
+        metadata:
+          type: object
+        verificationResults:
+          type: object
+        verificationTable:
+          type: array
+        promoOrders:
+          type: object
+        analysisDate:
+          type: string
+          format: date-time
+        locationIds:
+          type: array
+          items:
+            type: string
+        tspIds:
+          type: array
+          items:
+            type: string
+        primaryLocationId:
+          type: string
+        primaryTspId:
+          type: string
+
+    AnalyticsRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        userId:
+          type: string
+        analysisType:
+          type: string
+          enum: [profit_calculation, cost_analysis, revenue_forecast]
+        profitData:
+          type: object
+        calculationResults:
+          type: object
+        missingRebates:
+          type: object
+        totalProfit:
+          type: number
+        totalRevenue:
+          type: number
+        filesProcessed:
+          type: integer
+        verificationResults:
+          type: object
+        verificationTable:
+          type: array
+        promoOrders:
+          type: object
+        locationIds:
+          type: array
+          items:
+            type: string
+        tspIds:
+          type: array
+          items:
+            type: string
+        primaryLocationId:
+          type: string
+        primaryTspId:
+          type: string
+        metadata:
+          type: object
+        analysisDate:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    ContactInquiryRequest:
+      type: object
+      required: [firstName, lastName, email, message]
+      properties:
+        firstName:
+          type: string
+          minLength: 2
+          maxLength: 50
+        lastName:
+          type: string
+          minLength: 2
+          maxLength: 50
+        email:
+          type: string
+          format: email
+        company:
+          type: string
+          minLength: 2
+          maxLength: 100
+        message:
+          type: string
+          minLength: 10
+          maxLength: 1000
+        category:
+          type: string
+          enum: [GENERAL, TECHNICAL, BILLING, FEATURE_REQUEST]
+          default: GENERAL
+
+    ContactInquiryResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        contactId:
+          type: string
+        ticketNumber:
+          type: string
+
+    TicketResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        ticket:
+          type: object
+          properties:
+            ticketNumber:
+              type: string
+            firstName:
+              type: string
+            lastName:
+              type: string
+            email:
+              type: string
+            company:
+              type: string
+            message:
+              type: string
+            category:
+              type: string
+            status:
+              type: string
+            priority:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+            updatedAt:
+              type: string
+              format: date-time
+            responses:
+              type: array
+              items:
+                type: object
+            customerReplies:
+              type: array
+              items:
+                type: object
+
+    TicketReplyRequest:
+      type: object
+      required: [message, customerEmail, customerName]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        customerEmail:
+          type: string
+          format: email
+        customerName:
+          type: string
+          minLength: 2
+          maxLength: 100
+
+    TspIdExtractionResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        results:
+          type: object
+          properties:
+            tspId:
+              type: string
+            confidence:
+              type: string
+            method:
+              type: string
+            description:
+              type: string
+            accuracy:
+              type: string
+        fileName:
+          type: string
+        extractedAt:
+          type: string
+          format: date-time
+
+    BatchTspIdResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        totalFiles:
+          type: integer
+        successfulExtractions:
+          type: integer
+        failedExtractions:
+          type: integer
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              fileName:
+                type: string
+              success:
+                type: boolean
+              tspId:
+                type: string
+              confidence:
+                type: string
+              method:
+                type: string
+              accuracy:
+                type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              fileName:
+                type: string
+              error:
+                type: string
+        extractedAt:
+          type: string
+          format: date-time
+
+    FileProcessingResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        data:
+          type: object
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+        details:
+          type: string
+        requestId:
+          type: string
+
+  examples:
+    HealthySystem:
+      summary: Healthy system response
+      value:
+        status: "ReconFY Backend API"
+        version: "1.0.0"
+        timestamp: "2024-01-15T10:30:00.000Z"
+        environment: "production"
+        uptime: 86400
+        memory:
+          rss: 157286400
+          heapTotal: 131072000
+          heapUsed: 98304000
+        checks:
+          firebase:
+            status: "healthy"
+            message: "Connected"
+          stripe:
+            status: "healthy"
+            message: "Connected"
+          awsSes:
+            status: "healthy"
+            message: "Connected"
+          cognito:
+            status: "healthy"
+            message: "Connected"
+        overall: "healthy"
+
+    SubscriptionExample:
+      summary: Active subscription
+      value:
+        subscription:
+          status: "ACTIVE"
+          tier: "PRO"
+          startDate: "2024-01-01T00:00:00.000Z"
+          endDate: "2024-02-01T00:00:00.000Z"
+          stripeCustomerId: "cus_1234567890"
+          stripeSubscriptionId: "sub_1234567890"
+          cancelAtPeriodEnd: false
+          billing:
+            amount: 149
+            currency: "USD"
+
+    TspIdExtractionExample:
+      summary: Successful TSP ID extraction
+      value:
+        success: true
+        results:
+          tspId: "TSP123456789"
+          confidence: "95%"
+          method: "PyMuPDF Smart Extraction"
+          description: "Found TSP ID in document header"
+          accuracy: "100%"
+        fileName: "invoice_2024_01.pdf"
+        extractedAt: "2024-01-15T10:30:00.000Z"
+
+    ContactInquiryExample:
+      summary: Support inquiry submission
+      value:
+        success: true
+        message: "Contact inquiry submitted successfully"
+        contactId: "1705317000000_abc123"
+        ticketNumber: "RF-2024-001234"

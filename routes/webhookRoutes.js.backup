@@ -735,6 +735,131 @@ export const setupWebhookRoutes = (app, {
           // This prevents duplicate subscription creation
           console.log('[WEBHOOK] Skipping customer.subscription.created - handled by checkout.session.completed');
           return { success: true, reason: 'handled_by_checkout_session' };
+          
+          const customer = await stripe.customers.retrieve(newSubscription.customer);
+          
+          // ✅ PERFORMANCE FIX: Use indexed query instead of scanning all users
+          let userId = null;
+          try {
+            const userQuery = await db.ref('users')
+              .orderByChild('subscription/stripeCustomerId')
+              .equalTo(customer.id)
+              .once('value');
+            
+            if (userQuery.exists()) {
+              const userSnapshot = userQuery.val();
+              userId = Object.keys(userSnapshot)[0];
+            }
+          } catch (queryError) {
+            console.warn('[PERFORMANCE] Indexed query failed, falling back to scan:', queryError.message);
+            const usersSnapshot = await db.ref('users').once('value');
+            usersSnapshot.forEach(childSnapshot => {
+              const userData = childSnapshot.val();
+              if (userData.subscription?.stripeCustomerId === customer.id) {
+                userId = childSnapshot.key;
+              }
+            });
+          }
+          
+          if (userId) {
+            // Use safe webhook processing to prevent race conditions
+            const result = await webhookProcessingUtils.processWebhookSafely(
+              event,
+              userId,
+              async () => {
+                // Determine plan tier from Stripe price ID
+                const priceId = newSubscription.items.data[0]?.price?.id;
+                let tier = 'STARTER'; // default to STARTER if no match
+                
+                webhookLogger.debug('Price ID mapping for new subscription', {
+                  receivedPriceId: priceId,
+                  envVars: {
+                    STARTER: process.env.STRIPE_STARTER_PRICE_ID,
+                    GROWTH: process.env.STRIPE_GROWTH_PRICE_ID,
+                    PRO: process.env.STRIPE_PRO_PRICE_ID,
+                    ENTERPRISE: process.env.STRIPE_ENTERPRISE_PRICE_ID
+                  }
+                }, req.requestId);
+                
+                if (priceId === process.env.STRIPE_STARTER_PRICE_ID) {
+                  tier = 'STARTER';
+                  webhookLogger.debug('Matched STARTER price ID for new subscription', {}, req.requestId);
+                } else if (priceId === process.env.STRIPE_GROWTH_PRICE_ID) {
+                  tier = 'GROWTH';
+                  webhookLogger.debug('Matched GROWTH price ID for new subscription', {}, req.requestId);
+                } else if (priceId === process.env.STRIPE_PRO_PRICE_ID) {
+                  tier = 'PRO';
+                  webhookLogger.debug('Matched PRO price ID for new subscription', {}, req.requestId);
+                } else if (priceId === process.env.STRIPE_ENTERPRISE_PRICE_ID) {
+                  tier = 'ENTERPRISE';
+                  webhookLogger.debug('Matched ENTERPRISE price ID for new subscription', {}, req.requestId);
+                } else {
+                  webhookLogger.warn('No matching price ID found for new subscription - using default STARTER', {
+                    priceId,
+                    defaultTier: tier
+                  }, req.requestId);
+                }
+                
+                // Update subscription with new plan details
+                await updateUserSubscription(userId, {
+                  tier,
+                  status: 'ACTIVE',
+                  isActive: true,
+                  startDate: new Date(newSubscription.current_period_start * 1000).toISOString(),
+                  endDate: new Date(newSubscription.current_period_end * 1000).toISOString(),
+                  nextBillingDate: new Date(newSubscription.current_period_end * 1000).toISOString(),
+                  stripeCustomerId: customer.id,
+                  stripeSubscriptionId: newSubscription.id,
+                  billing: {
+                    amount: newSubscription.items.data[0]?.price?.unit_amount ? newSubscription.items.data[0]?.price?.unit_amount / 100 : null,
+                    currency: newSubscription.items.data[0]?.price?.currency ? newSubscription.items.data[0]?.price?.currency.toUpperCase() : null
+                  },
+                  features: {
+                    exportEnabled: true,
+                    fullAccess: true,
+                    prioritySupport: tier === 'GROWTH' || tier === 'PRO' || tier === 'ENTERPRISE'
+                  }
+                }, db, true); // Skip deduplication since we're inside circuit breaker
+                
+                return { success: true, reason: 'subscription_created_processed', tier };
+              },
+              db
+            );
+            
+            if (result.success) {
+              webhookLogger.debug('New user subscription created in DB', {
+                userId,
+                tier: result.result.tier
+              }, req.requestId);
+              
+              // ✅ AUDIT LOGGING FIX: Log new subscription creation via webhook
+              try {
+                const userData = await db.ref(`users/${userId}`).once('value');
+                const user = userData.val();
+                if (user) {
+                  // Audit logging removed for webhook subscription creation
+                  
+                  console.log('[AUDIT] ✅ New subscription creation logged successfully', {
+                    userId,
+                    tier: result.result.tier
+                  });
+                }
+              } catch (auditError) {
+                console.error('[AUDIT] ❌ Failed to log new subscription creation', { 
+                  error: auditError.message, 
+                  userId 
+                });
+              }
+            } else {
+              console.error('[DEBUG] Webhook: Failed to process subscription creation', { 
+                userId, 
+                reason: result.reason,
+                error: result.error
+              });
+            }
+          } else {
+            console.warn('[DEBUG] Webhook: No user found for customer in subscription.created', { customerId: customer.id });
+          }
           break;
         }
         // Note: subscription_schedule.completed webhook removed - no more scheduled downgrades
