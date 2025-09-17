@@ -1,6 +1,7 @@
 import express from "express";
 import Stripe from "stripe";
 import { webhookLimiter } from "../middleware/rateLimiting.js";
+import { webhookLogger } from "../utils/logger.js";
 // Audit logging for subscriptions via webhooks removed per request
 
 export const setupWebhookRoutes = (app, { 
@@ -74,11 +75,17 @@ export const setupWebhookRoutes = (app, {
         switch (event.type) {
         case 'checkout.session.completed': {
           const session = event.data.object;
-          console.log('[DEBUG] Webhook: checkout.session.completed', { session });
+          webhookLogger.debug('Checkout session completed', { 
+            sessionId: session.id, 
+            mode: session.mode 
+          }, req.requestId);
           if (session.mode === 'subscription') {
             const subscription = await stripe.subscriptions.retrieve(session.subscription);
             const customer = await stripe.customers.retrieve(session.customer);
-            console.log('[DEBUG] Webhook: Stripe subscription and customer fetched', { subscription, customer });
+            webhookLogger.debug('Stripe data fetched', { 
+              subscriptionId: subscription.id,
+              customerId: customer.id 
+            }, req.requestId);
             
             // ✅ CRITICAL FIX: Check if user already has this subscription
             const existingUserSnap = await db.ref(`users/${session.metadata.userId}`).once('value');
@@ -164,17 +171,17 @@ export const setupWebhookRoutes = (app, {
             );
             
             if (result.success) {
-              console.log('[DEBUG] Webhook: User subscription updated', { 
+              webhookLogger.debug('User subscription updated', { 
                 userId: session.metadata.userId, 
                 planType: session.metadata.planType,
                 result: result.result
-              });
+              }, req.requestId);
             } else {
-              console.error('[DEBUG] Webhook: Failed to process subscription creation', { 
+              webhookLogger.error('Failed to process subscription creation', { 
                 userId: session.metadata.userId, 
                 reason: result.reason,
                 error: result.error
-              });
+              }, req.requestId);
             }
           }
           break;
@@ -183,7 +190,10 @@ export const setupWebhookRoutes = (app, {
         // The complete handler is below at line 3723
         case 'customer.subscription.deleted': {
           const deletedSubscription = event.data.object;
-          console.log('[DEBUG] Webhook: customer.subscription.deleted', { deletedSubscription });
+          webhookLogger.debug('Subscription deleted', { 
+            subscriptionId: deletedSubscription.id,
+            customerId: deletedSubscription.customer
+          }, req.requestId);
           const deletedCustomer = await stripe.customers.retrieve(deletedSubscription.customer);
           // ✅ PERFORMANCE FIX: Use indexed query instead of scanning all users
           let deletedUserId = null;
@@ -230,16 +240,20 @@ export const setupWebhookRoutes = (app, {
             );
             
             if (result.success) {
-            console.log('[DEBUG] Webhook: User subscription marked as cancelled in DB', { deletedUserId });
+            webhookLogger.debug('User subscription marked as cancelled', { 
+              deletedUserId 
+            }, req.requestId);
             } else {
-              console.error('[DEBUG] Webhook: Failed to process subscription deletion', { 
+              webhookLogger.error('Failed to process subscription deletion', { 
                 deletedUserId, 
                 reason: result.reason,
                 error: result.error
-              });
+              }, req.requestId);
             }
           } else {
-            console.warn('[DEBUG] Webhook: No user found for customer in subscription.deleted', { customerId: deletedCustomer.id });
+            webhookLogger.warn('No user found for customer in subscription deletion', { 
+              customerId: deletedCustomer.id 
+            }, req.requestId);
           }
           break;
         }
@@ -258,7 +272,10 @@ export const setupWebhookRoutes = (app, {
           //
           // ✅ FIXED: Now only logs when there's an ACTUAL change in cancellation state
           let updatedSubscription = event.data.object;
-          console.log('[DEBUG] Webhook: customer.subscription.updated', { updatedSubscription });
+          webhookLogger.debug('Subscription updated', { 
+            subscriptionId: updatedSubscription.id,
+            customerId: updatedSubscription.customer
+          }, req.requestId);
           
           // ✅ CRITICAL FIX: Check for significant changes including cancellations
           const previousAttributes = event.data.previous_attributes;
@@ -358,7 +375,7 @@ export const setupWebhookRoutes = (app, {
             const priceId = updatedSubscription.items.data[0]?.price?.id;
             let tier = 'STARTER'; // default to STARTER if no match
             
-            console.log('[DEBUG] Webhook: Price ID mapping', {
+            webhookLogger.debug('Price ID mapping', {
               receivedPriceId: priceId,
               envVars: {
                 STARTER: process.env.STRIPE_STARTER_PRICE_ID,
@@ -366,28 +383,28 @@ export const setupWebhookRoutes = (app, {
                 PRO: process.env.STRIPE_PRO_PRICE_ID,
                 ENTERPRISE: process.env.STRIPE_ENTERPRISE_PRICE_ID
               }
-            });
+            }, req.requestId);
             
             if (priceId === process.env.STRIPE_STARTER_PRICE_ID) {
               tier = 'STARTER';
-              console.log('[DEBUG] Webhook: Matched STARTER price ID');
+              webhookLogger.debug('Matched STARTER price ID', {}, req.requestId);
             } else if (priceId === process.env.STRIPE_GROWTH_PRICE_ID) {
               tier = 'GROWTH';
-              console.log('[DEBUG] Webhook: Matched GROWTH price ID');
+              webhookLogger.debug('Matched GROWTH price ID', {}, req.requestId);
             } else if (priceId === process.env.STRIPE_PRO_PRICE_ID) {
               tier = 'PRO';
-              console.log('[DEBUG] Webhook: Matched PRO price ID');
+              webhookLogger.debug('Matched PRO price ID', {}, req.requestId);
             } else if (priceId === process.env.STRIPE_ENTERPRISE_PRICE_ID) {
               tier = 'ENTERPRISE';
-              console.log('[DEBUG] Webhook: Matched ENTERPRISE price ID');
+              webhookLogger.debug('Matched ENTERPRISE price ID', {}, req.requestId);
             } else {
-              console.warn('[DEBUG] Webhook: No matching price ID found - using default STARTER', {
+              webhookLogger.warn('No matching price ID found - using default STARTER', {
                 priceId,
                 defaultTier: tier
-              });
+              }, req.requestId);
             }
 
-            console.log('[DEBUG] Webhook: Final tier determination', { priceId, tier });
+            webhookLogger.debug('Final tier determination', { priceId, tier }, req.requestId);
 
             // Add null checks for Stripe timestamps
             const startDate = updatedSubscription.current_period_start ? new Date(updatedSubscription.current_period_start * 1000).toISOString() : null;
@@ -438,11 +455,11 @@ export const setupWebhookRoutes = (app, {
             );
             
             if (result.success) {
-            console.log('[DEBUG] Webhook: User subscription updated in DB (subscription.updated)', {
+            webhookLogger.debug('User subscription updated in DB', {
               updatedUserId,
-                tier: result.result.tier,
-                amount: result.result.amount
-              });
+              tier: result.result.tier,
+              amount: result.result.amount
+            }, req.requestId);
               
               // ✅ AUDIT LOGGING FIX: Only log subscription plan change when there's an actual plan change
               try {
@@ -551,7 +568,10 @@ export const setupWebhookRoutes = (app, {
         }
         case 'invoice.paid': {
           const invoice = event.data.object;
-          console.log('[DEBUG] Webhook: invoice.paid', { invoice });
+          webhookLogger.debug('Invoice paid', { 
+            invoiceId: invoice.id,
+            subscriptionId: invoice.subscription 
+          }, req.requestId);
           
           // ✅ SAAS BEST PRACTICE: Only update payment confirmation, not full subscription
           if (invoice.subscription) {
@@ -611,16 +631,20 @@ export const setupWebhookRoutes = (app, {
               );
               
               if (result.success) {
-                console.log('[DEBUG] Webhook: User subscription updated in DB (invoice.paid)', { userId });
+                webhookLogger.debug('User subscription updated in DB (invoice.paid)', { 
+                  userId 
+                }, req.requestId);
               } else {
-                console.error('[DEBUG] Webhook: Failed to process invoice.paid', { 
+                webhookLogger.error('Failed to process invoice.paid', { 
                   userId, 
                   reason: result.reason,
                   error: result.error
-                });
+                }, req.requestId);
               }
             } else {
-              console.warn('[DEBUG] Webhook: No user found for customer in invoice.paid', { customerId: customer.id });
+              webhookLogger.warn('No user found for customer in invoice.paid', { 
+                customerId: customer.id 
+              }, req.requestId);
             }
           }
           break;
@@ -628,7 +652,10 @@ export const setupWebhookRoutes = (app, {
         case 'invoice.payment_failed': {
           // ✅ SAAS BEST PRACTICE: Handle payment failures for dunning management
           const invoice = event.data.object;
-          console.log('[DEBUG] Webhook: invoice.payment_failed', { invoice });
+          webhookLogger.debug('Invoice payment failed', { 
+            invoiceId: invoice.id,
+            subscriptionId: invoice.subscription 
+          }, req.requestId);
           
           if (invoice.subscription) {
             const customer = await stripe.customers.retrieve(invoice.customer);
@@ -684,17 +711,25 @@ export const setupWebhookRoutes = (app, {
               );
               
               if (result.success) {
-                console.log('[DEBUG] Webhook: Payment failure processed', { userId, invoiceId: invoice.id });
+                webhookLogger.debug('Payment failure processed', { 
+                  userId, 
+                  invoiceId: invoice.id 
+                }, req.requestId);
               }
             } else {
-              console.warn('[DEBUG] Webhook: No user found for payment failure', { customerId: customer.id });
+              webhookLogger.warn('No user found for payment failure', { 
+                customerId: customer.id 
+              }, req.requestId);
             }
           }
           break;
         }
         case 'customer.subscription.created': {
           const newSubscription = event.data.object;
-          console.log('[DEBUG] Webhook: customer.subscription.created', { newSubscription });
+          webhookLogger.debug('Customer subscription created', { 
+            subscriptionId: newSubscription.id,
+            customerId: newSubscription.customer 
+          }, req.requestId);
           
           // ✅ SAAS BEST PRACTICE: Skip if already processed by checkout.session.completed
           // This prevents duplicate subscription creation
@@ -736,7 +771,7 @@ export const setupWebhookRoutes = (app, {
                 const priceId = newSubscription.items.data[0]?.price?.id;
                 let tier = 'STARTER'; // default to STARTER if no match
                 
-                console.log('[DEBUG] Webhook: Price ID mapping for new subscription', {
+                webhookLogger.debug('Price ID mapping for new subscription', {
                   receivedPriceId: priceId,
                   envVars: {
                     STARTER: process.env.STRIPE_STARTER_PRICE_ID,
@@ -744,25 +779,25 @@ export const setupWebhookRoutes = (app, {
                     PRO: process.env.STRIPE_PRO_PRICE_ID,
                     ENTERPRISE: process.env.STRIPE_ENTERPRISE_PRICE_ID
                   }
-                });
+                }, req.requestId);
                 
                 if (priceId === process.env.STRIPE_STARTER_PRICE_ID) {
                   tier = 'STARTER';
-                  console.log('[DEBUG] Webhook: Matched STARTER price ID for new subscription');
+                  webhookLogger.debug('Matched STARTER price ID for new subscription', {}, req.requestId);
                 } else if (priceId === process.env.STRIPE_GROWTH_PRICE_ID) {
                   tier = 'GROWTH';
-                  console.log('[DEBUG] Webhook: Matched GROWTH price ID for new subscription');
+                  webhookLogger.debug('Matched GROWTH price ID for new subscription', {}, req.requestId);
                 } else if (priceId === process.env.STRIPE_PRO_PRICE_ID) {
                   tier = 'PRO';
-                  console.log('[DEBUG] Webhook: Matched PRO price ID for new subscription');
+                  webhookLogger.debug('Matched PRO price ID for new subscription', {}, req.requestId);
                 } else if (priceId === process.env.STRIPE_ENTERPRISE_PRICE_ID) {
                   tier = 'ENTERPRISE';
-                  console.log('[DEBUG] Webhook: Matched ENTERPRISE price ID for new subscription');
+                  webhookLogger.debug('Matched ENTERPRISE price ID for new subscription', {}, req.requestId);
                 } else {
-                  console.warn('[DEBUG] Webhook: No matching price ID found for new subscription - using default STARTER', {
+                  webhookLogger.warn('No matching price ID found for new subscription - using default STARTER', {
                     priceId,
                     defaultTier: tier
-                  });
+                  }, req.requestId);
                 }
                 
                 // Update subscription with new plan details
@@ -792,10 +827,10 @@ export const setupWebhookRoutes = (app, {
             );
             
             if (result.success) {
-              console.log('[DEBUG] Webhook: New user subscription created in DB', {
+              webhookLogger.debug('New user subscription created in DB', {
                 userId,
                 tier: result.result.tier
-              });
+              }, req.requestId);
               
               // ✅ AUDIT LOGGING FIX: Log new subscription creation via webhook
               try {
@@ -829,7 +864,9 @@ export const setupWebhookRoutes = (app, {
         }
         // Note: subscription_schedule.completed webhook removed - no more scheduled downgrades
         default:
-          console.log(`[DEBUG] Webhook: Unhandled event type: ${event.type}`);
+          webhookLogger.debug('Unhandled event type', { 
+            eventType: event.type 
+          }, req.requestId);
           return { success: true, reason: 'unhandled_event_type' };
       }
       

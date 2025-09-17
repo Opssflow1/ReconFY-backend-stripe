@@ -15,6 +15,7 @@ import {
   logUserReactivationToggle,
   logUserSubscriptionCreationCheckout
 } from "../utils/auditUtils.js";
+import { subscriptionLogger } from "../utils/logger.js";
 
 /**
  * Setup subscription routes for the Express app
@@ -31,18 +32,23 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
   // Secure endpoint to get current user's subscription data
   app.get('/subscription/me', ...requireAuth, validateQuery(subscriptionMeQuerySchema), async (req, res) => {
     const userId = req.user.sub;
-    console.log('[DEBUG] GET /subscription/me called', { userId });
+    subscriptionLogger.debug('GET /subscription/me called', { userId }, req.requestId);
     try {
       const subSnap = await db.ref(`users/${userId}/subscription`).once('value');
       const subscription = subSnap.val();
-      console.log('[DEBUG] Subscription data fetched from DB', { userId, subscription });
+      subscriptionLogger.debug('Subscription data fetched from DB', { 
+        userId, 
+        hasSubscription: !!subscription 
+      }, req.requestId);
       if (!subscription) {
-        console.warn('[DEBUG] Subscription not found for user', { userId });
+        subscriptionLogger.warn('Subscription not found for user', { userId }, req.requestId);
         return res.status(404).json({ error: 'Subscription not found' });
       }
       res.json({ subscription });
     } catch (err) {
-      console.error('[DEBUG] Error fetching subscription:', err);
+      subscriptionLogger.error('Error fetching subscription', { 
+        error: err.message 
+      }, req.requestId);
       res.status(500).json({ error: err.message });
     }
   });
@@ -72,7 +78,7 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
   // Update Stripe subscription plan (upgrade/downgrade)
   app.post("/update-subscription-plan", authLimiter, validateBody(subscriptionSchema), ...requireAuth, async (req, res) => {
     const { userId, planType } = req.body;
-    console.log('[DEBUG] POST /update-subscription-plan called', { userId, planType });
+    subscriptionLogger.debug('POST /update-subscription-plan called', { userId, planType }, req.requestId);
     
     // ✅ SECURITY FIX: Validate user ownership
     if (req.user.sub !== userId) {
@@ -87,23 +93,31 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
       // Fetch user subscription from DB
       const userSnap = await db.ref(`users/${userId}/subscription`).once('value');
       const subscription = userSnap.val();
-      console.log('[DEBUG] Subscription fetched for update', { userId, subscription });
+      subscriptionLogger.debug('Subscription fetched for update', { 
+        userId, 
+        hasSubscription: !!subscription 
+      }, req.requestId);
       if (!subscription || !subscription.stripeSubscriptionId) {
-        console.warn('[DEBUG] No active Stripe subscription found for user', { userId });
+        subscriptionLogger.warn('No active Stripe subscription found for user', { userId }, req.requestId);
         return res.status(400).json({ error: "Active Stripe subscription not found" });
       }
 
       const priceId = getPriceId(planType);
       if (!priceId) {
-        console.warn('[DEBUG] Invalid plan type provided', { planType });
+        subscriptionLogger.warn('Invalid plan type provided', { planType }, req.requestId);
         return res.status(400).json({ error: "Invalid plan type" });
       }
 
       // Get the subscription from Stripe
       const stripeSub = await stripe.subscriptions.retrieve(subscription.stripeSubscriptionId);
-      console.log('[DEBUG] Stripe subscription retrieved', { stripeSub });
+      subscriptionLogger.debug('Stripe subscription retrieved', { 
+        subscriptionId: stripeSub.id,
+        status: stripeSub.status 
+      }, req.requestId);
       if (!stripeSub || !stripeSub.items.data.length) {
-        console.warn('[DEBUG] Stripe subscription items not found', { stripeSub });
+        subscriptionLogger.warn('Stripe subscription items not found', { 
+          subscriptionId: stripeSub?.id 
+        }, req.requestId);
         return res.status(400).json({ error: "Stripe subscription items not found" });
       }
 
@@ -149,7 +163,10 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
         }],
         proration_behavior: 'create_prorations'
       });
-      console.log('[DEBUG] Stripe subscription updated', { updatedSub });
+      subscriptionLogger.debug('Stripe subscription updated', { 
+        subscriptionId: updatedSub.id,
+        status: updatedSub.status 
+      }, req.requestId);
 
       res.json({ 
         success: true, 
@@ -158,7 +175,9 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
         customerId: stripeSub.customer
       });
     } catch (err) {
-      console.error('[DEBUG] Error updating subscription plan:', err);
+      subscriptionLogger.error('Error updating subscription plan', { 
+        error: err.message 
+      }, req.requestId);
       res.status(500).json({ error: err.message });
     }
   });
@@ -195,11 +214,11 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
         cancel_url: cancelUrl,
       });
       
-      console.log('[DEBUG] Checkout session created', { 
+      subscriptionLogger.debug('Checkout session created', { 
         userId, 
         planType, 
         sessionId: session.id 
-      });
+      }, req.requestId);
       
       res.json({ sessionId: session.id, url: session.url });
     } catch (err) {
@@ -246,10 +265,10 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
         
         await updateUserSubscription(userId, subscriptionData, db);
         
-        console.log('[DEBUG] Verify payment: User subscription updated', { 
+        subscriptionLogger.debug('Verify payment: User subscription updated', { 
           userId, 
           planType: session.metadata.planType
-        });
+        }, req.requestId);
         
         res.json({ success: true, subscription: subscriptionData });
       } else {
@@ -501,16 +520,15 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
   // Create billing portal session
   app.post('/create-billing-portal-session', authLimiter, validateBody(billingPortalBodySchema), ...requireAuth, async (req, res) => {
     try {
-      console.log('[DEBUG] POST /create-billing-portal-session called', { 
-        body: req.body, 
-        user: req.user?.sub,
-        headers: req.headers.origin 
-      });
+      subscriptionLogger.debug('POST /create-billing-portal-session called', { 
+        hasCustomerId: !!req.body.customerId,
+        origin: req.headers.origin 
+      }, req.requestId);
 
       const { customerId } = req.body;
       
       if (!customerId) {
-        console.warn('[DEBUG] Missing customerId in request body');
+        subscriptionLogger.warn('Missing customerId in request body', {}, req.requestId);
         return res.status(400).json({ 
           success: false, 
           message: 'Customer ID is required' 
@@ -519,43 +537,42 @@ export function setupSubscriptionRoutes(app, { stripe, auditLogger, db, cognitoC
 
       // Verify the customer belongs to the authenticated user
       const userId = req.user.sub;
-      console.log('[DEBUG] Authenticated user ID:', userId);
+      subscriptionLogger.debug('Authenticated user ID', { userId }, req.requestId);
       
       const userSnap = await db.ref(`users/${userId}/subscription`).once('value');
       const subscription = userSnap.val();
       
-      console.log('[DEBUG] User subscription data:', { 
+      subscriptionLogger.debug('User subscription data', { 
         hasSubscription: !!subscription, 
         stripeCustomerId: subscription?.stripeCustomerId,
-        requestedCustomerId: customerId 
-      });
+        requestedCustomerId: customerId
+      }, req.requestId);
       
       if (!subscription || subscription.stripeCustomerId !== customerId) {
-        console.warn('[DEBUG] Customer ID mismatch or no subscription found');
+        subscriptionLogger.warn('Customer ID mismatch or no subscription found', {}, req.requestId);
         return res.status(403).json({ 
           success: false, 
           message: 'Access denied: Customer ID does not match authenticated user' 
         });
       }
 
-      console.log('[DEBUG] Creating Stripe billing portal session for customer:', customerId);
+      subscriptionLogger.debug('Creating Stripe billing portal session', { customerId }, req.requestId);
       
       // Ensure we have a valid return URL
       const returnUrl = req.headers.origin 
         ? `${req.headers.origin}/subscription`
         : 'http://localhost:3000/subscription'; // Fallback for local development
       
-      console.log('[DEBUG] Using return URL:', returnUrl);
+      subscriptionLogger.debug('Using return URL', { returnUrl }, req.requestId);
       
       const session = await stripe.billingPortal.sessions.create({
         customer: customerId,
         return_url: returnUrl,
       });
 
-      console.log('[DEBUG] Stripe billing portal session created successfully:', { 
-        sessionId: session.id, 
-        url: session.url 
-      });
+      subscriptionLogger.debug('Stripe billing portal session created successfully', { 
+        sessionId: session.id
+      }, req.requestId);
 
       res.json({ 
         success: true, 

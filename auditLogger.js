@@ -175,7 +175,10 @@ class ImmutableAuditLogger {
     if (!data) return null;
     
     try {
-      const key = process.env.AUDIT_ENCRYPTION_KEY || 'default-key-change-in-production';
+      const key = process.env.AUDIT_ENCRYPTION_KEY;
+    if (!key) {
+      throw new Error('AUDIT_ENCRYPTION_KEY environment variable is required for audit data encryption');
+    }
       // Generate a 32-byte key from the string key
       const keyBuffer = crypto.scryptSync(key, 'salt', 32);
       // Generate a random 16-byte IV

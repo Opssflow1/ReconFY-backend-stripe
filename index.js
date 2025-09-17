@@ -200,7 +200,8 @@ const requiredEnvVars = [
   'COGNITO_REGION',
   'COGNITO_USER_POOL_ID',
   'SES_FROM_EMAIL',
-  'S3_BUCKET_NAME'
+  'S3_BUCKET_NAME',
+  'AUDIT_ENCRYPTION_KEY'
 ];
 
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
@@ -442,13 +443,18 @@ app.use((req, res, next) => {
   // Add request ID to response headers
   res.setHeader('X-Request-ID', req.headers['x-request-id']);
   
-  // Log request start
-  console.log(`[REQUEST] ${req.method} ${req.path} - ID: ${req.headers['x-request-id']}`);
+  // Set requestId on req object for easy access
+  req.requestId = req.headers['x-request-id'];
+  
+  // Log request start (only in development)
+  if (process.env.NODE_ENV === 'development') {
+    console.log(`[REQUEST] ${req.method} ${req.path} - ID: ${req.requestId}`);
+  }
   
   req.setTimeout(30000, () => {
     res.status(408).json({ 
       error: 'Request timeout',
-      requestId: req.headers['x-request-id']
+      requestId: req.requestId
     });
   });
   next();
@@ -549,18 +555,20 @@ app.use((err, req, res, next) => {
   
   // ✅ SECURITY: Handle file upload errors
   if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(400).json({
-      error: 'File Upload Error',
-      message: 'File size exceeds limit (10MB)',
-      details: 'Please upload a smaller file'
+    return res.status(413).json({
+      error: 'File Too Large',
+      message: 'Uploaded file exceeds maximum size limit (10MB)',
+      details: 'Please upload a smaller file',
+      requestId
     });
   }
   
   if (err.code === 'LIMIT_FILE_COUNT') {
-    return res.status(400).json({
-      error: 'File Upload Error',
-      message: 'Too many files uploaded',
-      details: 'Please upload only one file at a time'
+    return res.status(413).json({
+      error: 'Too Many Files',
+      message: 'Too many files uploaded at once',
+      details: 'Please upload only one file at a time',
+      requestId
     });
   }
   
@@ -597,22 +605,6 @@ app.use((err, req, res, next) => {
     });
   }
   
-  // ✅ CRITICAL FIX: Handle file size and upload errors
-  if (err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({
-      error: 'File Too Large',
-      message: 'Uploaded file exceeds maximum size limit',
-      requestId
-    });
-  }
-  
-  if (err.code === 'LIMIT_FILE_COUNT') {
-    return res.status(413).json({
-      error: 'Too Many Files',
-      message: 'Too many files uploaded at once',
-      requestId
-    });
-  }
   
   // Generic error response (don't expose internal details)
   res.status(500).json({

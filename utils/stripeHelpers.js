@@ -53,9 +53,9 @@ export function getTierHierarchy(tier) {
 export function getPlanPrice(planType) {
   const prices = {
     'TRIAL': 0,
-    'STARTER': 9,
-    'GROWTH': 29,
-    'PRO': 99,
+    'STARTER': 99,
+    'GROWTH': 199,
+    'PRO': 249,
     'ENTERPRISE': 299
   };
   return prices[planType] || 0;
