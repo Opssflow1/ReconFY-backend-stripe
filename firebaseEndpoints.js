@@ -6,38 +6,16 @@
 
 import express from 'express';
 import firebaseHandler from './firebaseHandler.js';
-import cognitoAuthenticate from './cognitoAuth.js';
 import { requireActiveSubscription } from './subscriptionAuth.js';
+import { requireAuth, adminProtected } from './middleware/stacks.js';
 import Joi from 'joi';
-import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema } from './schemas.js';
+import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema } from './schemas.js';
+import { validateBody, validateParams } from './middleware/validation.js';
 
 const router = express.Router();
 
 // ✅ Schemas are now imported from schemas.js to avoid duplication
-
-// Validation middleware
-const validateBody = (schema) => {
-  return (req, res, next) => {
-    const { error } = schema.validate(req.body);
-    if (error) {
-      console.error('🔍 VALIDATION ERROR:', {
-        path: req.path,
-        method: req.method,
-        body: req.body,
-        errors: error.details.map(d => ({
-          field: d.path.join('.'),
-          message: d.message,
-          value: d.context?.value
-        }))
-      });
-      return res.status(400).json({
-        error: 'Validation failed',
-        details: error.details.map(d => d.message)
-      });
-    }
-    next();
-  };
-};
+// ✅ Validation middleware is now imported from middleware/validation.js
 
 // --- PUBLIC ENDPOINTS (No authentication required) ---
 
@@ -53,12 +31,12 @@ router.post('/users', async (req, res) => {
 });
 
 // Apply authentication to all other routes
-router.use(cognitoAuthenticate);
+router.use(...requireAuth);
 
 // --- USER ANALYTICS / SESSION ENDPOINTS ---
 
 // Get user analytics data
-router.get('/user-analytics/:userId', async (req, res) => {
+router.get('/user-analytics/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const userData = await firebaseHandler.getUserAnalyticsData(userId);
@@ -69,7 +47,7 @@ router.get('/user-analytics/:userId', async (req, res) => {
 });
 
 // Set user analytics data
-router.post('/user-analytics/:userId', requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const data = req.body;
@@ -81,7 +59,7 @@ router.post('/user-analytics/:userId', requireActiveSubscription, async (req, re
 });
 
 // Update user analytics data
-router.patch('/user-analytics/:userId', requireActiveSubscription, async (req, res) => {
+router.patch('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const data = req.body;
@@ -93,7 +71,7 @@ router.patch('/user-analytics/:userId', requireActiveSubscription, async (req, r
 });
 
 // Get analyses count
-router.get('/user-analytics/:userId/analyses-count', async (req, res) => {
+router.get('/user-analytics/:userId/analyses-count', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const count = await firebaseHandler.getAnalysesCount(userId);
@@ -104,7 +82,7 @@ router.get('/user-analytics/:userId/analyses-count', async (req, res) => {
 });
 
 // Set analyses count
-router.post('/user-analytics/:userId/analyses-count', requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/analyses-count', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { count } = req.body;
@@ -116,7 +94,7 @@ router.post('/user-analytics/:userId/analyses-count', requireActiveSubscription,
 });
 
 // Get files processed count
-router.get('/user-analytics/:userId/files-processed', async (req, res) => {
+router.get('/user-analytics/:userId/files-processed', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const count = await firebaseHandler.getFilesProcessed(userId);
@@ -127,7 +105,7 @@ router.get('/user-analytics/:userId/files-processed', async (req, res) => {
 });
 
 // Set files processed count
-router.post('/user-analytics/:userId/files-processed', requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/files-processed', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { count } = req.body;
@@ -139,7 +117,7 @@ router.post('/user-analytics/:userId/files-processed', requireActiveSubscription
 });
 
 // Get activity history
-router.get('/user-analytics/:userId/activity-history', async (req, res) => {
+router.get('/user-analytics/:userId/activity-history', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const history = await firebaseHandler.getActivityHistory(userId);
@@ -150,7 +128,7 @@ router.get('/user-analytics/:userId/activity-history', async (req, res) => {
 });
 
 // Set activity history
-router.post('/user-analytics/:userId/activity-history', requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/activity-history', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { history } = req.body;
@@ -162,7 +140,7 @@ router.post('/user-analytics/:userId/activity-history', requireActiveSubscriptio
 });
 
 // Get user session key
-router.get('/user-analytics/:userId/session-key', async (req, res) => {
+router.get('/user-analytics/:userId/session-key', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const sessionKey = await firebaseHandler.getUserSessionKey(userId);
@@ -173,7 +151,7 @@ router.get('/user-analytics/:userId/session-key', async (req, res) => {
 });
 
 // Set user session key
-router.post('/user-analytics/:userId/session-key', requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/session-key', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { sessionKey } = req.body;
@@ -187,7 +165,7 @@ router.post('/user-analytics/:userId/session-key', requireActiveSubscription, as
 // --- USER OPERATIONS ENDPOINTS ---
 
 // Get user
-router.get('/users/:userId', async (req, res) => {
+router.get('/users/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const user = await firebaseHandler.getUser(userId);
@@ -201,7 +179,7 @@ router.get('/users/:userId', async (req, res) => {
 });
 
 // List users (admin only)
-router.get('/users', async (req, res) => {
+router.get('/users', ...adminProtected, async (req, res) => {
   try {
     const users = await firebaseHandler.listUsers();
     res.json(users);
@@ -213,7 +191,7 @@ router.get('/users', async (req, res) => {
 // --- SUBSCRIPTION OPERATIONS ENDPOINTS ---
 
 // Update usage
-router.patch('/users/:userId/usage', requireActiveSubscription, async (req, res) => {
+router.patch('/users/:userId/usage', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const usageData = req.body;
@@ -225,7 +203,7 @@ router.patch('/users/:userId/usage', requireActiveSubscription, async (req, res)
 });
 
 // Increment usage
-router.post('/users/:userId/usage/increment', requireActiveSubscription, async (req, res) => {
+router.post('/users/:userId/usage/increment', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { field } = req.body;
@@ -237,7 +215,7 @@ router.post('/users/:userId/usage/increment', requireActiveSubscription, async (
 });
 
 // Reset monthly usage
-router.post('/users/:userId/usage/reset', requireActiveSubscription, async (req, res) => {
+router.post('/users/:userId/usage/reset', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const result = await firebaseHandler.resetMonthlyUsage(userId);
@@ -261,7 +239,7 @@ router.post('/analytics', requireActiveSubscription, async (req, res) => {
 });
 
 // Get user analytics
-router.get('/analytics/:userId', async (req, res) => {
+router.get('/analytics/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const analytics = await firebaseHandler.getUserAnalytics(userId);
@@ -272,7 +250,7 @@ router.get('/analytics/:userId', async (req, res) => {
 });
 
 // Get analytics by date range
-router.get('/analytics/:userId/date-range', async (req, res) => {
+router.get('/analytics/:userId/date-range', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const { startDate, endDate } = req.query;
@@ -284,7 +262,7 @@ router.get('/analytics/:userId/date-range', async (req, res) => {
 });
 
 // Delete analytics
-router.delete('/analytics/:userId', requireActiveSubscription, async (req, res) => {
+router.delete('/analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const result = await firebaseHandler.deleteAnalytics(userId);
@@ -295,7 +273,7 @@ router.delete('/analytics/:userId', requireActiveSubscription, async (req, res) 
 });
 
 // Delete user analytics
-router.delete('/user-analytics/:userId', requireActiveSubscription, async (req, res) => {
+router.delete('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const result = await firebaseHandler.deleteUserAnalytics(userId);
@@ -308,7 +286,7 @@ router.delete('/user-analytics/:userId', requireActiveSubscription, async (req, 
 // --- LEGAL ACCEPTANCE ENDPOINTS ---
 
 // Update legal acceptance
-router.patch('/users/:userId/legal-acceptance', requireActiveSubscription, async (req, res) => {
+router.patch('/users/:userId/legal-acceptance', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const legalData = req.body;
@@ -320,7 +298,7 @@ router.patch('/users/:userId/legal-acceptance', requireActiveSubscription, async
 });
 
 // Get legal acceptance
-router.get('/users/:userId/legal-acceptance', async (req, res) => {
+router.get('/users/:userId/legal-acceptance', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const legalAcceptance = await firebaseHandler.getLegalAcceptance(userId);
@@ -331,7 +309,7 @@ router.get('/users/:userId/legal-acceptance', async (req, res) => {
 });
 
 // Check if user has accepted all legal
-router.get('/users/:userId/legal-acceptance/check', async (req, res) => {
+router.get('/users/:userId/legal-acceptance/check', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const hasAccepted = await firebaseHandler.hasAcceptedAllLegal(userId);
@@ -344,7 +322,7 @@ router.get('/users/:userId/legal-acceptance/check', async (req, res) => {
 // --- ADMIN OPERATIONS ENDPOINTS ---
 
 // Update user subscription (admin only)
-router.patch('/admin/users/:userId/subscription', async (req, res) => {
+router.patch('/admin/users/:userId/subscription', ...adminProtected, validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const subscriptionData = req.body;
@@ -356,7 +334,7 @@ router.patch('/admin/users/:userId/subscription', async (req, res) => {
 });
 
 // Get admin stats
-router.get('/admin/stats', async (req, res) => {
+router.get('/admin/stats', ...adminProtected, async (req, res) => {
   try {
     const stats = await firebaseHandler.getAdminStats();
     res.json(stats);
@@ -366,7 +344,7 @@ router.get('/admin/stats', async (req, res) => {
 });
 
 // Get chart data
-router.get('/admin/chart-data', async (req, res) => {
+router.get('/admin/chart-data', ...adminProtected, async (req, res) => {
   try {
     const chartData = await firebaseHandler.getChartData();
     res.json(chartData);
@@ -378,7 +356,7 @@ router.get('/admin/chart-data', async (req, res) => {
 // --- LOCATION OPERATIONS ENDPOINTS ---
 
 // Create location
-router.post('/locations/:userId', requireActiveSubscription, async (req, res) => {
+router.post('/locations/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const locationData = req.body;
@@ -390,7 +368,7 @@ router.post('/locations/:userId', requireActiveSubscription, async (req, res) =>
 });
 
 // Get user locations
-router.get('/locations/:userId', async (req, res) => {
+router.get('/locations/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const locations = await firebaseHandler.getUserLocations(userId);
@@ -401,7 +379,7 @@ router.get('/locations/:userId', async (req, res) => {
 });
 
 // Get specific location
-router.get('/locations/:userId/:locationId', async (req, res) => {
+router.get('/locations/:userId/:locationId', validateParams(userAndLocationParamSchema), async (req, res) => {
   try {
     const { userId, locationId } = req.params;
     const location = await firebaseHandler.getLocation(userId, locationId);
@@ -412,7 +390,7 @@ router.get('/locations/:userId/:locationId', async (req, res) => {
 });
 
 // Update location
-router.patch('/locations/:userId/:locationId', requireActiveSubscription, async (req, res) => {
+router.patch('/locations/:userId/:locationId', validateParams(userAndLocationParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId } = req.params;
     const updates = req.body;
@@ -424,7 +402,7 @@ router.patch('/locations/:userId/:locationId', requireActiveSubscription, async 
 });
 
 // Delete location
-router.delete('/locations/:userId/:locationId', requireActiveSubscription, async (req, res) => {
+router.delete('/locations/:userId/:locationId', validateParams(userAndLocationParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId } = req.params;
     const result = await firebaseHandler.deleteLocation(userId, locationId);
@@ -435,7 +413,7 @@ router.delete('/locations/:userId/:locationId', requireActiveSubscription, async
 });
 
 // Bulk delete locations
-router.delete('/locations/:userId/bulk', requireActiveSubscription, async (req, res) => {
+router.delete('/locations/:userId/bulk', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { locationIds } = req.body;
@@ -447,7 +425,7 @@ router.delete('/locations/:userId/bulk', requireActiveSubscription, async (req, 
 });
 
 // Get deletion impact
-router.get('/locations/:userId/:locationId/impact', async (req, res) => {
+router.get('/locations/:userId/:locationId/impact', validateParams(userAndLocationParamSchema), async (req, res) => {
   try {
     const { userId, locationId } = req.params;
     const impact = await firebaseHandler.getDeletionImpact(userId, locationId);
@@ -458,7 +436,7 @@ router.get('/locations/:userId/:locationId/impact', async (req, res) => {
 });
 
 // Check TSP ID uniqueness
-router.get('/locations/:userId/tsp-id/:tspId/unique', async (req, res) => {
+router.get('/locations/:userId/tsp-id/:tspId/unique', validateParams(userTspParamSchema), async (req, res) => {
   try {
     const { userId, tspId } = req.params;
     const { excludeLocationId } = req.query;
@@ -470,7 +448,7 @@ router.get('/locations/:userId/tsp-id/:tspId/unique', async (req, res) => {
 });
 
 // Get location count
-router.get('/locations/:userId/count', async (req, res) => {
+router.get('/locations/:userId/count', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const count = await firebaseHandler.getLocationCount(userId);
@@ -481,7 +459,7 @@ router.get('/locations/:userId/count', async (req, res) => {
 });
 
 // Get location by TSP ID
-router.get('/locations/:userId/tsp-id/:tspId', async (req, res) => {
+router.get('/locations/:userId/tsp-id/:tspId', validateParams(userTspParamSchema), async (req, res) => {
   try {
     const { userId, tspId } = req.params;
     const location = await firebaseHandler.getLocationByTspId(userId, tspId);
@@ -580,7 +558,7 @@ router.post('/expenses/:userId/:locationId/:monthYear', requireActiveSubscriptio
 });
 
 // Get monthly expenses for specific location
-router.get('/expenses/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+router.get('/expenses/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     
@@ -597,7 +575,7 @@ router.get('/expenses/:userId/:locationId/:monthYear', requireActiveSubscription
 });
 
 // Update expense in location-month
-router.patch('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActiveSubscription, validateBody(expenseSchema), async (req, res) => {
+router.patch('/expenses/:userId/:locationId/:monthYear/:expenseId', validateParams(userLocMonthExpenseParamSchema), requireActiveSubscription, validateBody(expenseSchema), async (req, res) => {
   try {
     const { userId, locationId, monthYear, expenseId } = req.params;
     const updates = req.body;
@@ -615,7 +593,7 @@ router.patch('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActiv
 });
 
 // Delete expense from location-month
-router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActiveSubscription, async (req, res) => {
+router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', validateParams(userLocMonthExpenseParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId, monthYear, expenseId } = req.params;
     
@@ -632,7 +610,7 @@ router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', requireActi
 });
 
 // Import CSV expenses to location-month
-router.post('/expenses/:userId/:locationId/:monthYear/import', requireActiveSubscription, validateBody(expenseImportSchema), async (req, res) => {
+router.post('/expenses/:userId/:locationId/:monthYear/import', validateParams(userLocMonthParamSchema), requireActiveSubscription, validateBody(expenseImportSchema), async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     const { expenses } = req.body;
@@ -652,7 +630,7 @@ router.post('/expenses/:userId/:locationId/:monthYear/import', requireActiveSubs
 // --- MONTHLY SUMMARY ENDPOINTS ---
 
 // Get location monthly summary
-router.get('/monthly-summary/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+router.get('/monthly-summary/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     
@@ -686,7 +664,7 @@ router.get('/monthly-summary/:userId', requireActiveSubscription, async (req, re
 });
 
 // Calculate monthly summary
-router.post('/monthly-summary/:userId/:locationId/:monthYear', requireActiveSubscription, async (req, res) => {
+router.post('/monthly-summary/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     

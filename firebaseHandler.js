@@ -607,7 +607,7 @@ class FirebaseHandler {
     }
   }
 
-  // Delete a location (hard delete - removes from database and analytics)
+  // Delete a location (hard delete - removes from database, analytics, expenses, and S3 files)
   async deleteLocation(userId, locationId) {
     try {
       // Check if user can remove locations
@@ -620,17 +620,22 @@ class FirebaseHandler {
         throw new Error(`You must maintain at least ${limits.min} location(s) for your ${limits.name} plan.`);
       }
 
-      // Get location details before deletion for analytics cleanup
+      // Get location details before deletion for cleanup
       const locationToDelete = await this.getLocation(userId, locationId);
       if (!locationToDelete) {
         throw new Error('Location not found');
       }
 
       const tspId = locationToDelete.tspId;
+      const updates = {};
+      let deletedAnalyticsCount = 0;
+      let deletedExpensesCount = 0;
+      let deletedSummariesCount = 0;
+      let deletedS3FilesCount = 0;
+      const s3KeysToDelete = [];
       
       // Step 1: Delete associated analytics for this location
       const analyticsSnap = await this.db.ref(`analytics/${userId}`).once('value');
-      let deletedAnalyticsCount = 0;
       
       if (analyticsSnap.exists()) {
         const analytics = analyticsSnap.val();
@@ -649,30 +654,90 @@ class FirebaseHandler {
           }
         });
         
-        // Use batch operation for atomic deletion
-        if (analyticsToDelete.length > 0) {
-          const updates = {};
+        // Add analytics to batch deletion
           analyticsToDelete.forEach(analyticsId => {
             updates[`analytics/${userId}/${analyticsId}`] = null; // null = delete
           });
-          
-          await this.db.ref().update(updates);
           deletedAnalyticsCount = analyticsToDelete.length;
-          console.log(`[TRANSACTION] Deleted ${deletedAnalyticsCount} analytics for location ${locationId}`);
+      }
+
+      // Step 2: Delete expenses + collect S3 keys from expenses/{userId}/{locationId}
+      const expensesRef = this.db.ref(`expenses/${userId}/${locationId}`);
+      const expensesSnap = await expensesRef.once('value');
+      
+      if (expensesSnap.exists()) {
+        const expenses = expensesSnap.val();
+        
+        // Collect S3 keys and count expenses
+        Object.values(expenses).forEach(monthData => {
+          if (monthData.expenses) {
+            Object.values(monthData.expenses).forEach(expense => {
+              if (expense.attachment?.s3Key) {
+                s3KeysToDelete.push(expense.attachment.s3Key);
+              }
+            });
+          }
+        });
+        
+        // Add expenses to batch deletion
+        updates[`expenses/${userId}/${locationId}`] = null;
+        deletedExpensesCount = Object.keys(expenses).length;
+      }
+
+      // Step 3: Delete monthly summaries from monthly-summaries/{userId}/{locationId}
+      const summariesRef = this.db.ref(`monthly-summaries/${userId}/${locationId}`);
+      const summariesSnap = await summariesRef.once('value');
+      
+      if (summariesSnap.exists()) {
+        const summaries = summariesSnap.val();
+        updates[`monthly-summaries/${userId}/${locationId}`] = null;
+        deletedSummariesCount = Object.keys(summaries).length;
+      }
+
+      // Step 4: Delete S3 files using dynamic import
+      if (s3KeysToDelete.length > 0) {
+        try {
+          const { deleteFromS3Default } = await import('./utils/s3Utils.js');
+          const deleteFromS3 = deleteFromS3Default;
+          
+          for (const s3Key of s3KeysToDelete) {
+            try {
+              await deleteFromS3(s3Key);
+              deletedS3FilesCount++;
+            } catch (s3Error) {
+              console.error(`[S3] Failed to delete file ${s3Key}:`, s3Error.message);
+              // Continue with other deletions even if S3 fails
+            }
+          }
+        } catch (importError) {
+          console.error('[S3] Failed to import deleteFromS3 function:', importError.message);
+          // Continue with other deletions even if S3 import fails
         }
       }
 
-      // Step 2: Delete the location from database
-      const locationRef = this.db.ref(`users/${userId}/locations/${locationId}`);
-      await locationRef.remove();
+      // Step 5: Delete location record
+      updates[`users/${userId}/locations/${locationId}`] = null;
+
+      // Execute all deletions atomically
+      await this.db.ref().update(updates);
+      
+      console.log(`[TRANSACTION] Deleted location ${locationId}:`, {
+        analytics: deletedAnalyticsCount,
+        expenses: deletedExpensesCount,
+        summaries: deletedSummariesCount,
+        s3Files: deletedS3FilesCount
+      });
       
       return {
         success: true,
-        message: 'Location and associated analytics data deleted successfully',
+        message: 'Location and all associated data deleted successfully!',
         details: {
           locationId,
           tspId,
-          deletedAnalyticsCount
+          deletedAnalyticsCount,
+          deletedExpensesCount,
+          deletedSummariesCount,
+          deletedS3FilesCount
         }
       };
     } catch (error) {
@@ -755,10 +820,55 @@ class FirebaseHandler {
         });
       }
 
+      // Count expenses and S3 files that would be affected
+      const expensesRef = this.db.ref(`expenses/${userId}/${locationId}`);
+      const expensesSnapshot = await expensesRef.once('value');
+      
+      let expenseImpact = {
+        totalExpenses: 0,
+        totalMonths: 0,
+        totalS3Files: 0
+      };
+
+      if (expensesSnapshot.exists()) {
+        const expenses = expensesSnapshot.val();
+        expenseImpact.totalMonths = Object.keys(expenses).length;
+        
+        Object.values(expenses).forEach(monthData => {
+          if (monthData.expenses) {
+            Object.values(monthData.expenses).forEach(expense => {
+              expenseImpact.totalExpenses++;
+              if (expense.attachment?.s3Key) {
+                expenseImpact.totalS3Files++;
+              }
+            });
+          }
+        });
+      }
+
+      // Count monthly summaries that would be affected
+      const summariesRef = this.db.ref(`monthly-summaries/${userId}/${locationId}`);
+      const summariesSnapshot = await summariesRef.once('value');
+      
+      let summariesImpact = {
+        totalSummaries: 0
+      };
+
+      if (summariesSnapshot.exists()) {
+        const summaries = summariesSnapshot.val();
+        summariesImpact.totalSummaries = Object.keys(summaries).length;
+      }
+
+      const totalImpact = analyticsImpact.recordsToDelete + analyticsImpact.recordsToUpdate + 
+                         expenseImpact.totalExpenses + summariesImpact.totalSummaries + 
+                         expenseImpact.totalS3Files;
+
       return {
         location,
         analyticsImpact,
-        totalImpact: analyticsImpact.recordsToDelete + analyticsImpact.recordsToUpdate
+        expenseImpact,
+        summariesImpact,
+        totalImpact
       };
     } catch (error) {
       throw error;
@@ -1094,6 +1204,36 @@ class FirebaseHandler {
       const existingExpense = expenseSnap.val();
       const now = new Date().toISOString();
 
+      // ✅ S3 CLEANUP: Delete old attachment if new one is provided and different
+      if (updates.attachment && 
+          existingExpense.attachment?.s3Key && 
+          existingExpense.attachment.s3Key !== updates.attachment.s3Key) {
+        try {
+          const { deleteFromS3Default } = await import('./utils/s3Utils.js');
+          const deleteFromS3 = deleteFromS3Default;
+          await deleteFromS3(existingExpense.attachment.s3Key);
+          console.log(`✅ Deleted old attachment from S3: ${existingExpense.attachment.s3Key}`);
+        } catch (s3Error) {
+          console.error('❌ Failed to delete old attachment from S3:', s3Error);
+          // Continue with update even if S3 deletion fails
+        }
+      }
+
+      // ✅ S3 CLEANUP: Delete old attachment if attachment is being removed (set to null)
+      if (updates.hasOwnProperty('attachment') && 
+          updates.attachment === null && 
+          existingExpense.attachment?.s3Key) {
+        try {
+          const { deleteFromS3Default } = await import('./utils/s3Utils.js');
+          const deleteFromS3 = deleteFromS3Default;
+          await deleteFromS3(existingExpense.attachment.s3Key);
+          console.log(`✅ Deleted removed attachment from S3: ${existingExpense.attachment.s3Key}`);
+        } catch (s3Error) {
+          console.error('❌ Failed to delete removed attachment from S3:', s3Error);
+          // Continue with update even if S3 deletion fails
+        }
+      }
+
       // Update expense
       const updatedExpense = {
         ...existingExpense,
@@ -1138,7 +1278,8 @@ class FirebaseHandler {
       if (expense.attachment && expense.attachment.s3Key) {
         try {
           // Import S3 functions from main index.js
-          const { deleteFromS3 } = await import('./index.js');
+          const { deleteFromS3Default } = await import('./utils/s3Utils.js');
+          const deleteFromS3 = deleteFromS3Default;
           await deleteFromS3(expense.attachment.s3Key);
           console.log(`✅ Deleted attachment from S3: ${expense.attachment.s3Key}`);
         } catch (s3Error) {

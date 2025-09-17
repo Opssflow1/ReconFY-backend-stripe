@@ -6,7 +6,7 @@ module.exports = {
     exec_mode: 'cluster',  // Enable clustering mode
     autorestart: true,
     watch: false,
-    max_memory_restart: '2G',  // Increased memory limit
+    max_memory_restart: '4G',  // Doubled memory limit for better performance
     env: {
       NODE_ENV: 'production',
       PORT: 3000
@@ -23,6 +23,8 @@ module.exports = {
     listen_timeout: 10000,
     kill_timeout: 5000,
     health_check_grace_period: 3000,
-    health_check_interval: 30000
+    health_check_interval: 30000,
+    // Node.js memory optimization
+    node_args: '--max-old-space-size=4096 --expose-gc'  // 4GB heap size + garbage collection
   }]
 };
