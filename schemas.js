@@ -19,7 +19,7 @@ export const expenseSchema = Joi.object({
     .messages({ 'string.min': 'Payment method is required' }),
   notes: Joi.string().max(500).optional()
     .messages({ 'string.max': 'Notes must be less than 500 characters' }),
-  // Attachment fields - allow object, null, undefined, or empty string
+  // Attachment fields - allow object, null, or empty string
   attachment: Joi.alternatives().try(
     Joi.object({
       fileName: Joi.string().required(),
@@ -29,7 +29,7 @@ export const expenseSchema = Joi.object({
       uploadedAt: Joi.string().isoDate().required(),
       uploadedBy: Joi.string().required()
     }),
-    Joi.allow(null, undefined, "") // Allow null, undefined, or empty string when no file
+    Joi.any().valid(null, "") // Allow null or empty string when no file
   ).optional()
 });
 
