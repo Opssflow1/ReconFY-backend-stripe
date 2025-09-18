@@ -64,9 +64,14 @@ export const setupTspIdRoutes = (app, { upload, uploadMultiple }) => {
         // Call Python script using process manager (pool with fallback)
         const scriptPath = path.join(__dirname, '..', 'python');
         
+        // Use virtual environment Python if it exists, otherwise fallback to system Python
+        const venvPython = path.join(__dirname, '..', 'venv', 'bin', 'python');
+        const pythonCommand = fs.existsSync(venvPython) ? venvPython : 
+                             (process.platform === 'linux' ? 'python3' : 'python');
+        
         const options = {
           mode: 'json',
-          pythonPath: 'python',
+          pythonPath: pythonCommand, // Use venv Python if available, otherwise system Python
           pythonOptions: ['-u'],
           scriptPath: scriptPath,
           args: [path.resolve(tempFilePath)] // Use absolute path
