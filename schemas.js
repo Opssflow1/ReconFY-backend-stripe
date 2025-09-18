@@ -19,6 +19,8 @@ export const expenseSchema = Joi.object({
     .messages({ 'string.min': 'Payment method is required' }),
   notes: Joi.string().max(500).optional()
     .messages({ 'string.max': 'Notes must be less than 500 characters' }),
+  // Excel import tracking field - allow but ignore
+  index: Joi.number().integer().optional().strip(),
   // Attachment fields - allow object, null, or empty string
   attachment: Joi.alternatives().try(
     Joi.object({
