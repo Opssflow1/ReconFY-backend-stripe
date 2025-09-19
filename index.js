@@ -21,6 +21,7 @@ import { webhookCircuitBreaker } from "./utils/circuitBreaker.js";
 import { webhookProcessingUtils } from "./utils/webhookProcessing.js";
 import { updateUserSubscription } from "./utils/subscriptionUtils.js";
 import { fileMemoryMonitor } from "./utils/memoryMonitor.js";
+import { createTrialExpiryScheduler } from "./utils/trialExpiryScheduler.js";
 import { setupContactRoutes } from "./routes/contactRoutes.js";
 import { setupSubscriptionRoutes } from "./routes/subscriptionRoutes.js";
 import { setupAnalyticsRoutes } from "./routes/analyticsRoutes.js";
@@ -477,6 +478,14 @@ app.use('/firebase/expenses/:userId/:locationId/:monthYear', (req, res, next) =>
   next();
 });
 
+// ✅ TRIAL EXPIRY SCHEDULER: Initialize trial expiry scheduler
+const trialExpiryScheduler = createTrialExpiryScheduler(db, {
+  checkInterval: 24 * 60 * 60 * 1000, // Check every 24 hours
+  initialDelay: 5 * 60 * 1000,        // Wait 5 minutes after startup
+  batchSize: 50,                       // Process 50 users per batch
+  enabled: true                        // Enable scheduler
+});
+
 // ✅ FIREBASE ENDPOINTS: Add secure Firebase operations endpoints
 app.use('/firebase', firebaseEndpoints);
 
@@ -502,7 +511,8 @@ setupAdminRoutes(app, {
   stripe, 
   webhookCircuitBreaker, 
   firebaseHandler, 
-  orphanedFilesTracker 
+  orphanedFilesTracker,
+  trialExpiryScheduler
 });
 
 // ✅ FIREBASE EXPENSE ROUTES: Setup Firebase expense file management endpoints
@@ -823,11 +833,16 @@ app.listen(PORT, () => {
     console.log('  📋 Admin:             /admin/users, /admin/audit-logs, /admin/contact-inquiries');
     console.log('  🔄 Webhooks:          /webhook, /admin/retry-failed-webhooks, /admin/webhook-stats, /admin/webhook-health');
     console.log('  📊 SaaS Metrics:      /admin/business-metrics, /admin/system-health, /admin/cleanup-duplicate-subscriptions');
+    console.log('  ⏰ Trial Management:  /admin/trial-expiry-status, /admin/trigger-trial-expiry');
   }
   
   // Start enhanced memory monitoring
   fileMemoryMonitor.start();
   console.log('[STARTUP] 🧠 Enhanced Memory Monitoring: ACTIVE');
+  
+  // Start trial expiry scheduler
+  trialExpiryScheduler.start();
+  console.log('[STARTUP] ⏰ Trial Expiry Scheduler: ACTIVE');
 });
 
 

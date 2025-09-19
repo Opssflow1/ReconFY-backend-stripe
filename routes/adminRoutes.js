@@ -17,7 +17,8 @@ export const setupAdminRoutes = (app, {
   stripe, 
   webhookCircuitBreaker, 
   firebaseHandler, 
-  orphanedFilesTracker 
+  orphanedFilesTracker,
+  trialExpiryScheduler 
 }) => {
   // ✅ S3 CLEANUP: Monitor orphaned files endpoint
   app.get('/admin/orphaned-files', ...adminProtected, async (req, res) => {
@@ -632,6 +633,65 @@ export const setupAdminRoutes = (app, {
           error: error.message,
           timestamp: new Date().toISOString()
         }
+      });
+    }
+  });
+
+  // ✅ TRIAL EXPIRY: Get scheduler status
+  app.get('/admin/trial-expiry-status', ...adminProtected, async (req, res) => {
+    try {
+      // Only allow admin users to access this endpoint
+      const { sub: userId } = req.user;
+      const user = await firebaseHandler.getUser(userId);
+      
+      if (!user || user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied: Admin role required' });
+      }
+
+      const status = trialExpiryScheduler ? trialExpiryScheduler.getStatus() : null;
+      
+      res.json({
+        success: true,
+        scheduler: status,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error getting trial expiry scheduler status:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ✅ TRIAL EXPIRY: Manual trigger for trial expiry check
+  app.post('/admin/trigger-trial-expiry', ...adminProtected, async (req, res) => {
+    try {
+      // Only allow admin users to trigger this
+      const { sub: userId } = req.user;
+      const user = await firebaseHandler.getUser(userId);
+      
+      if (!user || user.role !== 'admin') {
+        return res.status(403).json({ error: 'Access denied: Admin role required' });
+      }
+
+      if (!trialExpiryScheduler) {
+        return res.status(503).json({ 
+          error: 'Trial expiry scheduler not available',
+          success: false 
+        });
+      }
+
+      // Trigger manual check
+      await trialExpiryScheduler.manualCheck();
+      
+      res.json({
+        success: true,
+        message: 'Trial expiry check triggered successfully',
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Error triggering trial expiry check:', error);
+      res.status(500).json({ 
+        success: false,
+        error: error.message 
       });
     }
   });
