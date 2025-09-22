@@ -459,6 +459,17 @@ class FirebaseHandler {
         'subscription/adminUpdated': true,
         'subscription/adminUpdatedAt': currentDate
       };
+
+      // Handle status field if provided
+      if (subscriptionData.status) {
+        updateData['subscription/status'] = subscriptionData.status;
+        // Also update isActive based on status
+        if (subscriptionData.status === 'CANCELLED') {
+          updateData['subscription/isActive'] = false;
+        } else if (subscriptionData.status === 'ACTIVE') {
+          updateData['subscription/isActive'] = true;
+        }
+      }
       
       await userRef.update(updateData);
       return updateData;
