@@ -4,7 +4,7 @@ import { adminAuditLogsQuerySchema, adminLegalComplianceQuerySchema, businessMet
 import Stripe from "stripe";
 import { adminLimiter, globalLimiter } from "../middleware/rateLimiting.js";
 import { adminProtected, requireActivePlan } from "../middleware/stacks.js";
-import { validateBody } from "../middleware/validation.js";
+import { validateBody, validateQuery } from "../middleware/validation.js";
 import ImmutableAuditLogger from "../auditLogger.js";
 import { logTermsAccepted } from "../utils/auditUtils.js";
 import { webhookCircuitBreaker } from "../utils/circuitBreaker.js";
