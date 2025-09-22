@@ -1,26 +1,48 @@
 /**
- * Enhanced Memory Monitor
- * Real-time memory monitoring and optimization for file processing
- * Zero risk implementation - only monitoring, no functional changes
+ * Enhanced Memory Monitor - Optimized for ReconFY Backend
+ * Intelligent memory monitoring tailored for file processing workloads
+ * Environment-aware thresholds and smart cleanup strategies
  */
 
 class FileProcessingMemoryMonitor {
   constructor() {
-    this.threshold = 0.75; // 75% memory usage threshold
-    this.criticalThreshold = 0.90; // 90% critical memory usage
+    // Environment-based configuration
+    this.isDevelopment = process.env.NODE_ENV === 'development';
+    this.isProduction = process.env.NODE_ENV === 'production';
+    
+    // Adaptive thresholds based on environment and heap size
+    this.baseThreshold = this.isDevelopment ? 0.85 : 0.80; // 85% dev, 80% prod
+    this.baseCriticalThreshold = this.isDevelopment ? 0.95 : 0.90; // 95% dev, 90% prod
+    
+    // Dynamic thresholds that adjust based on heap size
+    this.threshold = this.baseThreshold;
+    this.criticalThreshold = this.baseCriticalThreshold;
+    
+    // Monitoring configuration
     this.interval = null;
     this.isMonitoring = false;
+    this.checkInterval = this.isDevelopment ? 30000 : 60000; // 30s dev, 60s prod
+    
+    // Smart monitoring - only alert on significant heap sizes
+    this.minHeapSizeForAlerts = 100; // MB - only alert if heap > 100MB
+    
+    // Statistics tracking
     this.stats = {
       totalChecks: 0,
       highUsageAlerts: 0,
       criticalAlerts: 0,
       emergencyCleanups: 0,
-      startTime: Date.now()
+      falseAlarms: 0, // Track small heap false alarms
+      startTime: Date.now(),
+      lastHeapSize: 0,
+      maxHeapSize: 0,
+      avgHeapSize: 0,
+      heapSizeHistory: []
     };
   }
   
   /**
-   * Start real-time memory monitoring
+   * Start intelligent memory monitoring
    */
   start() {
     if (this.isMonitoring) {
@@ -31,19 +53,22 @@ class FileProcessingMemoryMonitor {
     this.isMonitoring = true;
     this.stats.startTime = Date.now();
     
-    console.log('[MEMORY_MONITOR] 🚀 Starting real-time memory monitoring');
-    console.log(`[MEMORY_MONITOR] 📊 Thresholds: Normal < 75%, High ≥ 75%, Critical ≥ 90%`);
+    console.log('[MEMORY_MONITOR] 🚀 Starting intelligent memory monitoring');
+    console.log(`[MEMORY_MONITOR] 📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`[MEMORY_MONITOR] 📊 Thresholds: High ≥ ${(this.threshold * 100).toFixed(1)}%, Critical ≥ ${(this.criticalThreshold * 100).toFixed(1)}%`);
+    console.log(`[MEMORY_MONITOR] 📊 Check Interval: ${this.checkInterval / 1000}s`);
+    console.log(`[MEMORY_MONITOR] 📊 Min Heap for Alerts: ${this.minHeapSizeForAlerts}MB`);
     
     this.interval = setInterval(() => {
       this.checkMemoryUsage();
-    }, 15000); // Check every 15 seconds
+    }, this.checkInterval);
     
     // Initial memory check
     this.checkMemoryUsage();
   }
   
   /**
-   * Check current memory usage and trigger alerts if needed
+   * Intelligent memory usage checking with smart thresholds
    */
   checkMemoryUsage() {
     try {
@@ -55,19 +80,44 @@ class FileProcessingMemoryMonitor {
       const usagePercent = heapUsed / heapTotal;
       
       this.stats.totalChecks++;
+      this.stats.lastHeapSize = heapTotal;
+      this.stats.maxHeapSize = Math.max(this.stats.maxHeapSize, heapTotal);
       
-      // Log memory status every 10 checks (2.5 minutes)
+      // Track heap size history for averaging (keep last 20 measurements)
+      this.stats.heapSizeHistory.push(heapTotal);
+      if (this.stats.heapSizeHistory.length > 20) {
+        this.stats.heapSizeHistory.shift();
+      }
+      this.stats.avgHeapSize = this.stats.heapSizeHistory.reduce((a, b) => a + b, 0) / this.stats.heapSizeHistory.length;
+      
+      // Update dynamic thresholds based on heap size
+      this.updateDynamicThresholds(heapTotal);
+      
+      // Log memory status every 10 checks (5-10 minutes depending on environment)
       if (this.stats.totalChecks % 10 === 0) {
         console.log(`[MEMORY_MONITOR] 📊 Status: ${heapUsed.toFixed(2)}MB / ${heapTotal.toFixed(2)}MB (${(usagePercent * 100).toFixed(1)}%) | RSS: ${rss.toFixed(2)}MB | External: ${external.toFixed(2)}MB`);
+        console.log(`[MEMORY_MONITOR] 📊 Stats: Max: ${this.stats.maxHeapSize.toFixed(1)}MB, Avg: ${this.stats.avgHeapSize.toFixed(1)}MB, False Alarms: ${this.stats.falseAlarms}`);
       }
       
-      // Check for critical memory usage
+      // Smart alerting - only alert on significant heap sizes
+      if (heapTotal < this.minHeapSizeForAlerts) {
+        // Small heap - likely false alarm, just track it
+        if (usagePercent >= this.threshold) {
+          this.stats.falseAlarms++;
+          if (this.isDevelopment) {
+            console.log(`[MEMORY_MONITOR] 🔍 Small heap detected: ${heapTotal.toFixed(1)}MB (${(usagePercent * 100).toFixed(1)}%) - This is normal during startup`);
+          }
+        }
+        return; // Skip alerts for small heaps
+      }
+      
+      // Check for critical memory usage (only on significant heap sizes)
       if (usagePercent >= this.criticalThreshold) {
         this.stats.criticalAlerts++;
         console.error(`[MEMORY_MONITOR] 🚨 CRITICAL: Memory usage at ${(usagePercent * 100).toFixed(1)}% (${heapUsed.toFixed(2)}MB / ${heapTotal.toFixed(2)}MB)`);
         this.triggerEmergencyCleanup('CRITICAL');
       }
-      // Check for high memory usage
+      // Check for high memory usage (only on significant heap sizes)
       else if (usagePercent >= this.threshold) {
         this.stats.highUsageAlerts++;
         console.warn(`[MEMORY_MONITOR] ⚠️ HIGH: Memory usage at ${(usagePercent * 100).toFixed(1)}% (${heapUsed.toFixed(2)}MB / ${heapTotal.toFixed(2)}MB)`);
@@ -76,6 +126,27 @@ class FileProcessingMemoryMonitor {
       
     } catch (error) {
       console.error('[MEMORY_MONITOR] Error checking memory usage:', error.message);
+    }
+  }
+  
+  /**
+   * Update dynamic thresholds based on current heap size
+   * @param {number} heapTotal - Current heap total in MB
+   */
+  updateDynamicThresholds(heapTotal) {
+    // Adjust thresholds based on heap size
+    if (heapTotal < 200) {
+      // Small heap - be more lenient
+      this.threshold = this.baseThreshold + 0.05; // +5% more lenient
+      this.criticalThreshold = this.baseCriticalThreshold + 0.05;
+    } else if (heapTotal > 1000) {
+      // Large heap - be more strict
+      this.threshold = this.baseThreshold - 0.05; // -5% more strict
+      this.criticalThreshold = this.baseCriticalThreshold - 0.05;
+    } else {
+      // Medium heap - use base thresholds
+      this.threshold = this.baseThreshold;
+      this.criticalThreshold = this.baseCriticalThreshold;
     }
   }
   
@@ -91,10 +162,15 @@ class FileProcessingMemoryMonitor {
     try {
       // Force garbage collection if available
       if (global.gc) {
+        const beforeGC = process.memoryUsage();
         global.gc();
-        console.log('[MEMORY_MONITOR] ✅ Forced garbage collection');
+        const afterGC = process.memoryUsage();
+        const memoryFreed = (beforeGC.heapUsed - afterGC.heapUsed) / 1024 / 1024;
+        console.log(`[MEMORY_MONITOR] ✅ Emergency cleanup: Forced garbage collection - freed ${memoryFreed.toFixed(2)}MB`);
       } else {
-        console.log('[MEMORY_MONITOR] ⚠️ Garbage collection not available (run with --expose-gc)');
+        console.log('[MEMORY_MONITOR] ⚠️ Emergency cleanup: Garbage collection not available');
+        console.log('[MEMORY_MONITOR] 💡 To enable GC, run with: node --expose-gc index.js');
+        console.log('[MEMORY_MONITOR] 💡 Or use: npm run dev (includes --expose-gc)');
       }
       
       // Clear any file processing caches
@@ -127,8 +203,8 @@ class FileProcessingMemoryMonitor {
   }
   
   /**
-   * Get current memory statistics
-   * @returns {Object} Memory statistics
+   * Get comprehensive memory statistics
+   * @returns {Object} Enhanced memory statistics
    */
   getMemoryStats() {
     const usage = process.memoryUsage();
@@ -147,13 +223,22 @@ class FileProcessingMemoryMonitor {
       threshold: this.threshold * 100,
       criticalThreshold: this.criticalThreshold * 100,
       isMonitoring: this.isMonitoring,
-      stats: this.stats
+      environment: process.env.NODE_ENV || 'development',
+      minHeapForAlerts: this.minHeapSizeForAlerts,
+      checkInterval: this.checkInterval / 1000,
+      stats: {
+        ...this.stats,
+        maxHeapSize: Math.round(this.stats.maxHeapSize),
+        avgHeapSize: Math.round(this.stats.avgHeapSize),
+        falseAlarmRate: this.stats.totalChecks > 0 ? 
+          Math.round((this.stats.falseAlarms / this.stats.totalChecks) * 100) : 0
+      }
     };
   }
   
   /**
-   * Get monitoring statistics
-   * @returns {Object} Monitoring statistics
+   * Get enhanced monitoring statistics
+   * @returns {Object} Comprehensive monitoring statistics
    */
   getMonitoringStats() {
     const uptime = Date.now() - this.stats.startTime;
@@ -163,8 +248,41 @@ class FileProcessingMemoryMonitor {
       uptimeFormatted: this.formatUptime(uptime),
       isMonitoring: this.isMonitoring,
       threshold: this.threshold * 100,
-      criticalThreshold: this.criticalThreshold * 100
+      criticalThreshold: this.criticalThreshold * 100,
+      environment: process.env.NODE_ENV || 'development',
+      checkInterval: this.checkInterval / 1000,
+      minHeapForAlerts: this.minHeapSizeForAlerts,
+      maxHeapSize: Math.round(this.stats.maxHeapSize),
+      avgHeapSize: Math.round(this.stats.avgHeapSize),
+      falseAlarmRate: this.stats.totalChecks > 0 ? 
+        Math.round((this.stats.falseAlarms / this.stats.totalChecks) * 100) : 0,
+      healthScore: this.calculateHealthScore()
     };
+  }
+  
+  /**
+   * Calculate memory monitoring health score (0-100)
+   * @returns {number} Health score
+   */
+  calculateHealthScore() {
+    let score = 100;
+    
+    // Deduct points for high false alarm rate
+    const falseAlarmRate = this.stats.totalChecks > 0 ? 
+      (this.stats.falseAlarms / this.stats.totalChecks) * 100 : 0;
+    score -= Math.min(falseAlarmRate * 2, 30); // Max 30 points deduction
+    
+    // Deduct points for too many critical alerts
+    if (this.stats.criticalAlerts > 10) {
+      score -= Math.min((this.stats.criticalAlerts - 10) * 2, 40); // Max 40 points deduction
+    }
+    
+    // Deduct points for too many emergency cleanups
+    if (this.stats.emergencyCleanups > 20) {
+      score -= Math.min((this.stats.emergencyCleanups - 20) * 1, 20); // Max 20 points deduction
+    }
+    
+    return Math.max(Math.round(score), 0);
   }
   
   /**

@@ -9,13 +9,23 @@ import path from 'path';
 export const memoryCleanup = {
   /**
    * Force garbage collection if available
+   * @param {string} context - Context for logging
+   * @returns {boolean} - Whether GC was successful
    */
-  forceGC() {
+  forceGC(context = 'Memory Cleanup') {
     if (global.gc) {
+      const beforeGC = this.getMemoryStats();
       global.gc();
-      console.log('[MEMORY] Forced garbage collection');
+      const afterGC = this.getMemoryStats();
+      const memoryFreed = beforeGC.heapUsed - afterGC.heapUsed;
+      
+      console.log(`[MEMORY] ✅ ${context}: Forced garbage collection - freed ${memoryFreed}MB`);
+      return true;
     } else {
-      console.log('[MEMORY] Garbage collection not available (run with --expose-gc)');
+      console.log(`[MEMORY] ⚠️ ${context}: Garbage collection not available`);
+      console.log('[MEMORY] 💡 To enable GC, run with: node --expose-gc index.js');
+      console.log('[MEMORY] 💡 Or use: npm run dev (includes --expose-gc)');
+      return false;
     }
   },
   
@@ -91,15 +101,17 @@ export const memoryCleanup = {
   },
   
   /**
-   * Comprehensive cleanup after file processing
+   * Intelligent comprehensive cleanup after file processing
    * @param {Array|Object} files - Files to clean up
    * @param {string} tempDir - Temp directory to clean
    * @param {string} context - Context for logging
    */
   async comprehensiveCleanup(files, tempDir, context = 'File Processing') {
-    console.log(`[MEMORY] Starting cleanup for: ${context}`);
+    const startTime = Date.now();
+    console.log(`[MEMORY] Starting intelligent cleanup for: ${context}`);
     
     // Log memory usage before cleanup
+    const beforeStats = this.getMemoryStats();
     this.logMemoryUsage(`${context} - Before Cleanup`);
     
     // Clear file buffers
@@ -110,16 +122,34 @@ export const memoryCleanup = {
       await this.clearTempFiles(tempDir);
     }
     
-    // Force garbage collection
-    this.forceGC();
+    // Only force GC if memory usage is actually high
+    const currentStats = this.getMemoryStats();
+    if (currentStats.usagePercent > 70) {
+      const gcSuccess = this.forceGC(`${context} - High Memory Usage`);
+      if (!gcSuccess) {
+        console.log(`[MEMORY] ⚠️ GC not available, but memory usage is high (${currentStats.usagePercent}%)`);
+      }
+    } else {
+      console.log(`[MEMORY] ✅ Skipping GC - memory usage is healthy (${currentStats.usagePercent}%)`);
+    }
     
     // Log final memory usage
+    const afterStats = this.getMemoryStats();
     this.logMemoryUsage(`${context} - After Cleanup`);
     
-    // Check if memory usage is high after cleanup
-    const stats = this.getMemoryStats();
-    if (stats.usagePercent > 75) {
-      console.warn(`[MEMORY] ⚠️ High memory usage after cleanup: ${stats.usagePercent}%`);
+    // Calculate cleanup effectiveness
+    const memoryFreed = beforeStats.heapUsed - afterStats.heapUsed;
+    const cleanupTime = Date.now() - startTime;
+    
+    console.log(`[MEMORY] Cleanup completed in ${cleanupTime}ms, freed ${memoryFreed}MB`);
+    
+    // Only warn if memory usage is genuinely high after cleanup
+    if (afterStats.usagePercent > 80) {
+      console.warn(`[MEMORY] ⚠️ High memory usage after cleanup: ${afterStats.usagePercent}% (${afterStats.heapUsed}MB / ${afterStats.heapTotal}MB)`);
+    } else if (afterStats.usagePercent > 60) {
+      console.log(`[MEMORY] ℹ️ Moderate memory usage after cleanup: ${afterStats.usagePercent}% (${afterStats.heapUsed}MB / ${afterStats.heapTotal}MB)`);
+    } else {
+      console.log(`[MEMORY] ✅ Healthy memory usage after cleanup: ${afterStats.usagePercent}% (${afterStats.heapUsed}MB / ${afterStats.heapTotal}MB)`);
     }
   }
 };
