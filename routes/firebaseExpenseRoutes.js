@@ -95,7 +95,7 @@ export const setupFirebaseExpenseRoutes = (app, {
   });
 
   // Delete attachment
-  app.delete('/firebase/expenses/attachment/:s3Key', ...requireActivePlan, async (req, res) => {
+  app.delete('/firebase/expenses/attachment/:s3Key', ...requireAuth, async (req, res) => {
     try {
       const { s3Key } = req.params;
       const { sub: userId } = req.user;

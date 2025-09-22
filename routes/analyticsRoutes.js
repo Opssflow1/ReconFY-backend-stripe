@@ -176,7 +176,7 @@ export const setupAnalyticsRoutes = (app, { db, auditLogger, cognitoClient }) =>
   });
 
   // Delete all analytics for current user
-  app.delete('/analytics', ...requireActivePlan, async (req, res) => {
+  app.delete('/analytics', ...requireAuth, async (req, res) => {
     try {
       const userId = req.user.sub;
       await db.ref(`analytics/${userId}`).remove();
@@ -206,7 +206,7 @@ export const setupAnalyticsRoutes = (app, { db, auditLogger, cognitoClient }) =>
   });
 
   // Delete specific analytics record (simplified - userId from JWT)
-  app.delete('/analytics/:analyticsId', validateParams(analyticsIdParamSchema), ...requireActivePlan, async (req, res) => {
+  app.delete('/analytics/:analyticsId', validateParams(analyticsIdParamSchema), ...requireAuth, async (req, res) => {
     try {
       const userId = req.user.sub;
       const { analyticsId } = req.params;
@@ -235,7 +235,7 @@ export const setupAnalyticsRoutes = (app, { db, auditLogger, cognitoClient }) =>
   });
 
   // Delete analytics for specific location/TSP ID (for location deletion cleanup)
-  app.delete('/analytics/location/:locationId', ...requireActivePlan, async (req, res) => {
+  app.delete('/analytics/location/:locationId', ...requireAuth, async (req, res) => {
     try {
       const userId = req.user.sub;
       const { locationId } = req.params;

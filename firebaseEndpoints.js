@@ -262,7 +262,7 @@ router.get('/analytics/:userId/date-range', validateParams(userIdParamSchema), a
 });
 
 // Delete analytics
-router.delete('/analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.delete('/analytics/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const result = await firebaseHandler.deleteAnalytics(userId);
@@ -273,7 +273,7 @@ router.delete('/analytics/:userId', validateParams(userIdParamSchema), requireAc
 });
 
 // Delete user analytics
-router.delete('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.delete('/user-analytics/:userId', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const result = await firebaseHandler.deleteUserAnalytics(userId);
@@ -402,7 +402,7 @@ router.patch('/locations/:userId/:locationId', validateParams(userAndLocationPar
 });
 
 // Delete location
-router.delete('/locations/:userId/:locationId', validateParams(userAndLocationParamSchema), requireActiveSubscription, async (req, res) => {
+router.delete('/locations/:userId/:locationId', validateParams(userAndLocationParamSchema), async (req, res) => {
   try {
     const { userId, locationId } = req.params;
     const result = await firebaseHandler.deleteLocation(userId, locationId);
@@ -413,7 +413,7 @@ router.delete('/locations/:userId/:locationId', validateParams(userAndLocationPa
 });
 
 // Bulk delete locations
-router.delete('/locations/:userId/bulk', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.delete('/locations/:userId/bulk', validateParams(userIdParamSchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const { locationIds } = req.body;
@@ -593,7 +593,7 @@ router.patch('/expenses/:userId/:locationId/:monthYear/:expenseId', validatePara
 });
 
 // Delete expense from location-month
-router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', validateParams(userLocMonthExpenseParamSchema), requireActiveSubscription, async (req, res) => {
+router.delete('/expenses/:userId/:locationId/:monthYear/:expenseId', validateParams(userLocMonthExpenseParamSchema), async (req, res) => {
   try {
     const { userId, locationId, monthYear, expenseId } = req.params;
     
