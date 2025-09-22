@@ -1,6 +1,6 @@
 import express from "express";
 import { globalLimiter } from "../middleware/rateLimiting.js";
-import { requireActivePlan } from "../middleware/stacks.js";
+import { requireActivePlan, requireAuth } from "../middleware/stacks.js";
 import { memoryCleanup } from "../utils/memoryCleanup.js";
 
 export const setupProxyRoutes = (app, { 
@@ -33,30 +33,30 @@ export const setupProxyRoutes = (app, {
     }
   );
 
-  // Report download endpoints with subscription validation
+  // Report download endpoints
   app.get('/download-report', 
-    ...requireActivePlan,
+    ...requireAuth,
     async (req, res) => {
       await proxyToProcessingBackend(req, res, '/download-report');
     }
   );
 
   app.get('/download-profit-report', 
-    ...requireActivePlan,
+    ...requireAuth,
     async (req, res) => {
       await proxyToProcessingBackend(req, res, '/download-profit-report');
     }
   );
 
   app.get('/download-rebate-checker-report', 
-    ...requireActivePlan,
+    ...requireAuth,
     async (req, res) => {
       await proxyToProcessingBackend(req, res, '/download-rebate-checker-report');
     }
   );
 
   app.get('/download-pos-checker-report', 
-    ...requireActivePlan,
+    ...requireAuth,
     async (req, res) => {
       await proxyToProcessingBackend(req, res, '/download-pos-checker-report');
     }

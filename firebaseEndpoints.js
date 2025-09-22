@@ -558,7 +558,7 @@ router.post('/expenses/:userId/:locationId/:monthYear', requireActiveSubscriptio
 });
 
 // Get monthly expenses for specific location
-router.get('/expenses/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), requireActiveSubscription, async (req, res) => {
+router.get('/expenses/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     
@@ -630,7 +630,7 @@ router.post('/expenses/:userId/:locationId/:monthYear/import', validateParams(us
 // --- MONTHLY SUMMARY ENDPOINTS ---
 
 // Get location monthly summary
-router.get('/monthly-summary/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), requireActiveSubscription, async (req, res) => {
+router.get('/monthly-summary/:userId/:locationId/:monthYear', validateParams(userLocMonthParamSchema), async (req, res) => {
   try {
     const { userId, locationId, monthYear } = req.params;
     
@@ -647,7 +647,7 @@ router.get('/monthly-summary/:userId/:locationId/:monthYear', validateParams(use
 });
 
 // Get all monthly summaries for user
-router.get('/monthly-summary/:userId', requireActiveSubscription, async (req, res) => {
+router.get('/monthly-summary/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     
@@ -683,7 +683,7 @@ router.post('/monthly-summary/:userId/:locationId/:monthYear', validateParams(us
 // --- EXPENSE CATEGORIES ENDPOINTS ---
 
 // Get expense categories for user
-router.get('/expense-categories/:userId', requireActiveSubscription, async (req, res) => {
+router.get('/expense-categories/:userId', async (req, res) => {
   try {
     const { userId } = req.params;
     

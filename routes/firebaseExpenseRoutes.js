@@ -68,7 +68,7 @@ export const setupFirebaseExpenseRoutes = (app, {
   });
 
   // Get signed URL for attachment
-  app.get('/firebase/expenses/attachment/:s3Key', ...requireActivePlan, async (req, res) => {
+  app.get('/firebase/expenses/attachment/:s3Key', ...requireAuth, async (req, res) => {
     try {
       const { s3Key } = req.params;
       const { sub: userId } = req.user;
