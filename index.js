@@ -840,11 +840,6 @@ app.listen(PORT, () => {
   fileMemoryMonitor.start();
   console.log('[STARTUP] 🧠 Enhanced Memory Monitoring: ACTIVE');
   
-  // Log memory configuration
-  const memoryConfig = await import('./utils/memoryConfig.js');
-  const config = memoryConfig.memoryConfig.getConfig();
-  console.log(`[STARTUP] 🧠 Memory Config: ${config.environment} mode, Heap: ${config.maxHeapSize}MB, Thresholds: ${(config.highThreshold * 100).toFixed(0)}%/${(config.criticalThreshold * 100).toFixed(0)}%`);
-  
   // Start trial expiry scheduler
   trialExpiryScheduler.start();
   console.log('[STARTUP] ⏰ Trial Expiry Scheduler: ACTIVE');
