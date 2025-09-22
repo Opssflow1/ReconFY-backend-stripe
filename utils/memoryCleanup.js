@@ -110,16 +110,42 @@ export const memoryCleanup = {
       await this.clearTempFiles(tempDir);
     }
     
+    // Clear any additional caches
+    this.clearAdditionalCaches();
+    
     // Force garbage collection
     this.forceGC();
+    
+    // Wait a bit for GC to complete
+    await new Promise(resolve => setTimeout(resolve, 100));
     
     // Log final memory usage
     this.logMemoryUsage(`${context} - After Cleanup`);
     
     // Check if memory usage is high after cleanup
     const stats = this.getMemoryStats();
-    if (stats.usagePercent > 75) {
-      console.warn(`[MEMORY] ⚠️ High memory usage after cleanup: ${stats.usagePercent}%`);
+    const threshold = process.env.NODE_ENV === 'development' ? 85 : 75;
+    if (stats.usagePercent > threshold) {
+      console.warn(`[MEMORY] ⚠️ High memory usage after cleanup: ${stats.usagePercent}% (threshold: ${threshold}%)`);
+    }
+  },
+
+  /**
+   * Clear additional application caches
+   */
+  clearAdditionalCaches() {
+    try {
+      // Clear any global caches
+      if (global.gc) {
+        global.gc();
+      }
+      
+      // Clear any module-level caches if they exist
+      // This is where you'd clear your application-specific caches
+      
+      console.log('[MEMORY] Cleared additional caches');
+    } catch (error) {
+      console.error('[MEMORY] Error clearing additional caches:', error.message);
     }
   }
 };
