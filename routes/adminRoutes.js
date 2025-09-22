@@ -164,7 +164,7 @@ export const setupAdminRoutes = (app, {
   });
 
   // ✅ SAAS BEST PRACTICE: Business Metrics and Analytics
-  app.get("/admin/business-metrics", ...adminProtected, validateBody(businessMetricsQuerySchema), async (req, res) => {
+  app.get("/admin/business-metrics", ...adminProtected, validateQuery(businessMetricsQuerySchema), async (req, res) => {
     // Admin group check (Cognito 'Admins' group)
     const groups = req.user["cognito:groups"] || [];
     if (!groups.includes("Admins")) {
@@ -172,7 +172,7 @@ export const setupAdminRoutes = (app, {
     }
     
     try {
-      const { period, includeChurn } = req.body;
+      const { period, includeChurn } = req.query;
       const endDate = new Date();
       const startDate = new Date();
       
@@ -245,8 +245,12 @@ export const setupAdminRoutes = (app, {
             }
           } else if (subscription.status === 'CANCELLED') {
             metrics.users.cancelledUsers++;
+          } else if (subscription.status === 'trialing' || subscription.tier === 'TRIAL') {
+            // Count active trial users (users with TRIAL tier or trialing status)
+            metrics.users.trialUsers++;
           }
         } else if (userData.isTrialUsed) {
+          // Count users who signed up but never created a subscription (expired/inactive trials)
           metrics.users.trialUsers++;
         }
       }
