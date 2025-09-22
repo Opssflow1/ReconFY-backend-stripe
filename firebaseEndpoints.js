@@ -9,7 +9,7 @@ import firebaseHandler from './firebaseHandler.js';
 import { requireActiveSubscription } from './subscriptionAuth.js';
 import { requireAuth, adminProtected } from './middleware/stacks.js';
 import Joi from 'joi';
-import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema } from './schemas.js';
+import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema, adminUpdateUserSubscriptionBodySchema } from './schemas.js';
 import { validateBody, validateParams } from './middleware/validation.js';
 
 const router = express.Router();
@@ -322,12 +322,16 @@ router.get('/users/:userId/legal-acceptance/check', validateParams(userIdParamSc
 // --- ADMIN OPERATIONS ENDPOINTS ---
 
 // Update user subscription (admin only)
-router.patch('/admin/users/:userId/subscription', ...adminProtected, validateParams(userIdParamSchema), async (req, res) => {
+router.patch('/admin/users/:userId/subscription', ...adminProtected, validateParams(userIdParamSchema), validateBody(adminUpdateUserSubscriptionBodySchema), async (req, res) => {
   try {
     const { userId } = req.params;
     const subscriptionData = req.body;
     const result = await firebaseHandler.updateUserSubscription(userId, subscriptionData);
-    res.json(result);
+    res.json({ 
+      success: true, 
+      message: 'Subscription updated successfully',
+      updatedFields: Object.keys(subscriptionData).filter(key => subscriptionData[key] !== undefined)
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
