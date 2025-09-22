@@ -1,6 +1,6 @@
 import express from "express";
 import path from "path";
-import { requireActivePlan } from "../middleware/stacks.js";
+import { requireActivePlan, requireAuth } from "../middleware/stacks.js";
 import { uploadToS3, deleteFromS3, generateSignedUrl } from "../utils/s3Utils.js";
 import { memoryCleanup } from "../utils/memoryCleanup.js";
 
