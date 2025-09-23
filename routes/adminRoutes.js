@@ -227,11 +227,14 @@ export const setupAdminRoutes = (app, {
         }
         
         if (subscription) {
-          if (subscription.tier === 'TRIAL') {
-            // Count active trial users (tier is TRIAL, regardless of status)
+          if (subscription.status === 'CANCELLED') {
+            // Count cancelled users first (regardless of tier - cancelled trial users are cancelled users)
+            metrics.users.cancelledUsers++;
+          } else if (subscription.tier === 'TRIAL') {
+            // Count active trial users (tier is TRIAL and status is not CANCELLED)
             metrics.users.trialUsers++;
-          } else if (subscription.status === 'ACTIVE' && !subscription.cancelAtPeriodEnd) {
-            // Count active paid subscriptions (not scheduled for cancellation)
+          } else if (subscription.status === 'ACTIVE') {
+            // Count active paid subscriptions
             metrics.users.activeSubscriptions++;
             const amount = subscription.billing?.amount || 0;
             metrics.revenue.totalMRR += amount;
@@ -247,9 +250,6 @@ export const setupAdminRoutes = (app, {
             if (userData.isTrialUsed && subscription.tier !== 'TRIAL') {
               metrics.growth.conversions++;
             }
-          } else if (subscription.status === 'CANCELLED') {
-            // Count cancelled users (only rely on status field as per deep research)
-            metrics.users.cancelledUsers++;
           }
         } else if (userData.isTrialUsed) {
           // Count users who signed up but never created a subscription (expired/inactive trials)
