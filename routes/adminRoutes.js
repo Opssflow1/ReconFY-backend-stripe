@@ -248,11 +248,10 @@ export const setupAdminRoutes = (app, {
               metrics.growth.conversions++;
             }
           } else if (subscription.status === 'CANCELLED' || 
+                     subscription.status === 'INACTIVE' ||
                      subscription.cancelAtPeriodEnd === true ||
-                     subscription.status === 'past_due' ||
-                     subscription.status === 'unpaid' ||
-                     subscription.status === 'incomplete') {
-            // Count cancelled users (explicit cancellation, scheduled cancellation, or payment issues)
+                     subscription.isActive === false) {
+            // Count cancelled users (explicit cancellation, inactive, scheduled cancellation, or inactive flag)
             metrics.users.cancelledUsers++;
           }
         } else if (userData.isTrialUsed) {
