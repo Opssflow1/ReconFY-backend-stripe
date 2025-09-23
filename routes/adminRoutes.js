@@ -227,7 +227,11 @@ export const setupAdminRoutes = (app, {
         }
         
         if (subscription) {
-          if (subscription.status === 'ACTIVE') {
+          if (subscription.tier === 'TRIAL') {
+            // Count active trial users (tier is TRIAL, regardless of status)
+            metrics.users.trialUsers++;
+          } else if (subscription.status === 'ACTIVE') {
+            // Count active paid subscriptions
             metrics.users.activeSubscriptions++;
             const amount = subscription.billing?.amount || 0;
             metrics.revenue.totalMRR += amount;
@@ -245,9 +249,6 @@ export const setupAdminRoutes = (app, {
             }
           } else if (subscription.status === 'CANCELLED') {
             metrics.users.cancelledUsers++;
-          } else if (subscription.status === 'trialing' || subscription.tier === 'TRIAL') {
-            // Count active trial users (users with TRIAL tier or trialing status)
-            metrics.users.trialUsers++;
           }
         } else if (userData.isTrialUsed) {
           // Count users who signed up but never created a subscription (expired/inactive trials)
