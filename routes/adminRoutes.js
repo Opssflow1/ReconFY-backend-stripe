@@ -247,11 +247,8 @@ export const setupAdminRoutes = (app, {
             if (userData.isTrialUsed && subscription.tier !== 'TRIAL') {
               metrics.growth.conversions++;
             }
-          } else if (subscription.status === 'CANCELLED' || 
-                     subscription.status === 'INACTIVE' ||
-                     subscription.cancelAtPeriodEnd === true ||
-                     subscription.isActive === false) {
-            // Count cancelled users (explicit cancellation, inactive, scheduled cancellation, or inactive flag)
+          } else if (subscription.status === 'CANCELLED') {
+            // Count cancelled users (only rely on status field as per deep research)
             metrics.users.cancelledUsers++;
           }
         } else if (userData.isTrialUsed) {
