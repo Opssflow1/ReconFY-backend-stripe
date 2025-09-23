@@ -230,8 +230,8 @@ export const setupAdminRoutes = (app, {
           if (subscription.tier === 'TRIAL') {
             // Count active trial users (tier is TRIAL, regardless of status)
             metrics.users.trialUsers++;
-          } else if (subscription.status === 'ACTIVE') {
-            // Count active paid subscriptions
+          } else if (subscription.status === 'ACTIVE' && !subscription.cancelAtPeriodEnd) {
+            // Count active paid subscriptions (not scheduled for cancellation)
             metrics.users.activeSubscriptions++;
             const amount = subscription.billing?.amount || 0;
             metrics.revenue.totalMRR += amount;
@@ -247,7 +247,12 @@ export const setupAdminRoutes = (app, {
             if (userData.isTrialUsed && subscription.tier !== 'TRIAL') {
               metrics.growth.conversions++;
             }
-          } else if (subscription.status === 'CANCELLED') {
+          } else if (subscription.status === 'CANCELLED' || 
+                     subscription.cancelAtPeriodEnd === true ||
+                     subscription.status === 'past_due' ||
+                     subscription.status === 'unpaid' ||
+                     subscription.status === 'incomplete') {
+            // Count cancelled users (explicit cancellation, scheduled cancellation, or payment issues)
             metrics.users.cancelledUsers++;
           }
         } else if (userData.isTrialUsed) {
