@@ -346,8 +346,8 @@ const uploadMultiple = multer({
     }
   },
   limits: {
-    fileSize: 25 * 1024 * 1024, // 25MB limit per file (reduced from 50MB)
-    files: 5 // Allow up to 5 files for processing (reduced from 10)
+    fileSize: 50 * 1024 * 1024, // 50MB limit per file
+    files: 10 // Allow up to 10 files per request
   }
 });
 
