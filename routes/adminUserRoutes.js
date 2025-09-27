@@ -323,6 +323,17 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
     const { userId } = req.params;
     console.log('[ADMIN] User deletion requested', { userId, adminUser: req.user.sub });
 
+    // Initialize deletion counters
+    let totalLocationsDeleted = 0;
+    let totalS3FilesDeleted = 0;
+    let totalExpensesDeleted = 0;
+    let totalAnalyticsDeleted = 0;
+    let totalSummariesDeleted = 0;
+
+    // Initialize service deletion flags (moved outside try block for error handling)
+    let stripeDeleted = false;
+    let cognitoDeleted = false;
+
     try {
       // Step 1: Get user data from Firebase
       const userSnap = await db.ref(`users/${userId}`).once('value');
@@ -335,7 +346,6 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
       console.log('[ADMIN] User data retrieved', { userId, email: userData.email, stripeCustomerId: userData.subscription?.stripeCustomerId });
 
       // Step 2: Delete from Stripe (if customer exists)
-      let stripeDeleted = false;
       if (userData.subscription?.stripeCustomerId) {
         try {
           // Cancel all subscriptions first
@@ -360,7 +370,6 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
       }
 
       // Step 3: Delete from Cognito (if email exists)
-      let cognitoDeleted = false;
       if (userData.email) {
         try {
           const deleteUserCommand = new AdminDeleteUserCommand({
@@ -377,18 +386,88 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
         }
       }
 
-      // Step 4: Delete from Firebase (user data and analytics)
+      // Step 4: COMPLETE Firebase data deletion (100% deletion)
       try {
-        // Delete user analytics
-        await db.ref(`analytics/${userId}`).remove();
-        console.log('[ADMIN] User analytics deleted', { userId });
-
+        // Import firebaseHandler for comprehensive deletion
+        const firebaseHandlerModule = await import('../firebaseHandler.js');
+        const firebaseHandler = firebaseHandlerModule.default;
+        
+        console.log('[ADMIN] Starting complete user data deletion', { userId });
+        
+        // Get all user locations first
+        const userLocations = await firebaseHandler.getUserLocations(userId);
+        const locationIds = userLocations.map(location => location.id);
+        
+        // Delete all locations with comprehensive data cleanup
+        if (locationIds.length > 0) {
+          console.log('[ADMIN] Deleting all user locations', { userId, locationCount: locationIds.length });
+          
+          // Use bulk delete with skipLimitCheck for admin deletions
+          const bulkResult = await firebaseHandler.bulkDeleteLocations(userId, locationIds, { skipLimitCheck: true });
+          
+          if (!bulkResult.success) {
+            throw new Error(`Failed to delete locations: ${bulkResult.results.filter(r => !r.success).map(r => r.error).join(', ')}`);
+          }
+          
+          // Count all deleted data
+          bulkResult.results.forEach(result => {
+            if (result.success && result.details) {
+              totalLocationsDeleted += 1;
+              totalS3FilesDeleted += result.details.s3Files || 0;
+              totalExpensesDeleted += result.details.expenses || 0;
+              totalAnalyticsDeleted += result.details.analytics || 0;
+              totalSummariesDeleted += result.details.summaries || 0;
+            }
+          });
+        }
+        
+        // Delete ALL remaining user-specific data
+        console.log('[ADMIN] Deleting remaining user data', { userId });
+        
+        const completeDeletion = {};
+        
+        // Delete user analytics (session data)
+        completeDeletion[`userAnalytics/${userId}`] = null;
+        
+        // Delete expense categories
+        completeDeletion[`expense-categories/${userId}`] = null;
+        
+        // Delete payment methods
+        completeDeletion[`payment-methods/${userId}`] = null;
+        
+        // Delete any remaining analytics
+        completeDeletion[`analytics/${userId}`] = null;
+        
+        // Delete monthly summaries (if any remain)
+        completeDeletion[`monthly-summaries/${userId}`] = null;
+        
+        // Delete expenses (if any remain)
+        completeDeletion[`expenses/${userId}`] = null;
+        
         // Delete user profile and subscription
-        await db.ref(`users/${userId}`).remove();
-        console.log('[ADMIN] User profile deleted', { userId });
+        completeDeletion[`users/${userId}`] = null;
+        
+        // Execute ALL deletions atomically
+        await db.ref().update(completeDeletion);
+        
+        console.log('[ADMIN] Complete user data deletion successful', {
+          userId,
+          totalLocationsDeleted,
+          totalS3FilesDeleted,
+          totalExpensesDeleted,
+          totalAnalyticsDeleted,
+          totalSummariesDeleted
+        });
+        
       } catch (firebaseError) {
-        console.error('[ADMIN] Firebase deletion error', { error: firebaseError.message, userId });
-        throw firebaseError; // Re-throw Firebase errors as they're critical
+        console.error('[ADMIN] CRITICAL: Firebase deletion failed', { 
+          error: firebaseError.message, 
+          userId,
+          stack: firebaseError.stack
+        });
+        
+        // CRITICAL: If Firebase deletion fails, the entire operation fails
+        throw new Error(`CRITICAL: Failed to delete user data from Firebase: ${firebaseError.message}`);
       }
 
       // Step 5: Log the deletion
@@ -405,22 +484,43 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
 
       res.json({
         success: true,
-        message: "User deleted successfully",
+        message: "User and ALL associated data deleted successfully",
         details: {
           userId,
           email: userData.email,
           stripeDeleted,
           cognitoDeleted,
-          firebaseDeleted: true
+          firebaseDeleted: true,
+          completeDataDeletion: {
+            locations: totalLocationsDeleted,
+            s3Files: totalS3FilesDeleted,
+            expenses: totalExpensesDeleted,
+            analytics: totalAnalyticsDeleted,
+            summaries: totalSummariesDeleted,
+            totalDataDeleted: totalLocationsDeleted + totalS3FilesDeleted + totalExpensesDeleted + totalAnalyticsDeleted + totalSummariesDeleted
+          }
         }
       });
 
     } catch (error) {
-      console.error('[ADMIN] User deletion failed', { error: error.message, userId });
+      console.error('[ADMIN] CRITICAL: User deletion failed completely', { 
+        error: error.message, 
+        userId,
+        stack: error.stack,
+        stripeDeleted,
+        cognitoDeleted,
+        firebaseDeleted: false
+      });
+      
       res.status(500).json({
-        error: "Failed to delete user",
-        message: error.message,
-        userId
+        error: "CRITICAL: Complete user deletion failed",
+        message: `Failed to delete user completely: ${error.message}`,
+        userId,
+        partialDeletion: {
+          stripeDeleted,
+          cognitoDeleted,
+          firebaseDeleted: false
+        }
       });
     }
   });

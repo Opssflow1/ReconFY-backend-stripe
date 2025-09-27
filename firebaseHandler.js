@@ -759,28 +759,30 @@ class FirebaseHandler {
   }
 
   // Bulk delete multiple locations and their analytics
-  async bulkDeleteLocations(userId, locationIds) {
+  async bulkDeleteLocations(userId, locationIds, options = {}) {
     try {
       if (!Array.isArray(locationIds) || locationIds.length === 0) {
         throw new Error('Invalid location IDs provided');
       }
 
-      // Check if user can remove these locations
-      const userSubscription = await this.getUserSubscription(userId);
-      const currentLocations = await this.getUserLocations(userId);
-      const remainingLocations = currentLocations.length - locationIds.length;
-      const canRemove = remainingLocations >= this.getLocationLimits(userSubscription.tier).min;
-      
-      if (!canRemove) {
-        const limits = this.getLocationLimits(userSubscription.tier);
-        throw new Error(`Cannot delete locations. You must maintain at least ${limits.min} location(s) for your ${limits.name} plan.`);
+      // Check if user can remove these locations (skip for admin deletions)
+      if (!options.skipLimitCheck) {
+        const userSubscription = await this.getUserSubscription(userId);
+        const currentLocations = await this.getUserLocations(userId);
+        const remainingLocations = currentLocations.length - locationIds.length;
+        const canRemove = remainingLocations >= this.getLocationLimits(userSubscription.tier).min;
+        
+        if (!canRemove) {
+          const limits = this.getLocationLimits(userSubscription.tier);
+          throw new Error(`Cannot delete locations. You must maintain at least ${limits.min} location(s) for your ${limits.name} plan.`);
+        }
       }
 
       const results = [];
       
       for (const locationId of locationIds) {
         try {
-          const result = await this.deleteLocation(userId, locationId);
+          const result = await this.deleteLocation(userId, locationId, options);
           results.push({ locationId, success: true, message: result.message });
         } catch (error) {
           results.push({ locationId, success: false, error: error.message });
