@@ -546,7 +546,8 @@ setupWebhookRoutes(app, {
 
 // ✅ OTP ROUTES: Setup secure OTP authentication endpoints
 setupOTPRoutes(app, { 
-  sesClient 
+  sesClient,
+  db 
 });
 
 // ✅ ERROR HANDLING FIX: Comprehensive error handling middleware with circuit breakers
