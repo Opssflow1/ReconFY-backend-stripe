@@ -180,7 +180,7 @@ export const contactSchema = Joi.object({
   lastName: Joi.string().min(2).max(50).required(),
   email: Joi.string().email().required(),
   company: Joi.string().min(2).max(100).optional(),
-  message: Joi.string().min(10).max(1000).required()
+  message: Joi.string().min(10).max(250).required()
 });
 
 // Analytics validation schema
@@ -299,12 +299,12 @@ export const contactAdminStatsQuerySchema = Joi.object({
 });
 
 export const ticketReplyBodySchema = Joi.object({
-  message: Joi.string().min(1).max(1000).required()
-    .messages({ 'string.min': 'Message cannot be empty', 'string.max': 'Message cannot exceed 1000 characters', 'any.required': 'Message is required' }),
-  customerEmail: Joi.string().email().required()
-    .messages({ 'string.email': 'Please provide a valid email address', 'any.required': 'Customer email is required' }),
-  customerName: Joi.string().min(2).max(100).required()
-    .messages({ 'string.min': 'Customer name must be at least 2 characters long', 'string.max': 'Customer name must be no more than 100 characters long', 'any.required': 'Customer name is required' })
+  message: Joi.string().min(1).max(250).required()
+    .messages({ 'string.min': 'Message cannot be empty', 'string.max': 'Message cannot exceed 250 characters', 'any.required': 'Message is required' }),
+  email: Joi.string().email().optional()
+    .messages({ 'string.email': 'Please provide a valid email address' }),
+  name: Joi.string().min(2).max(100).optional()
+    .messages({ 'string.min': 'Customer name must be at least 2 characters long', 'string.max': 'Customer name must be no more than 100 characters long' })
 });
 
 // Admin system/audit/webhook queries

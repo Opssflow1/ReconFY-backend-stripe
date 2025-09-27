@@ -561,10 +561,11 @@ ReconFY Support Team
   app.post("/ticket/:ticketNumber/reply", contactLimiter, validateBody(ticketReplyBodySchema), async (req, res) => {
     try {
       const { ticketNumber } = req.params;
-      const { message, customerEmail, customerName } = req.body;
+      const { message, email, name } = req.body;
       
-      if (!message || !customerEmail || !customerName) {
-        return res.status(400).json({ error: "Message, customer email, and customer name are required" });
+      // ✅ FIX: Only require message, customer data is optional
+      if (!message) {
+        return res.status(400).json({ error: "Message is required" });
       }
       
       // Find the ticket
@@ -591,8 +592,12 @@ ReconFY Support Team
         return res.status(400).json({ error: "Cannot reply to resolved ticket" });
       }
       
-      // Verify customer email matches ticket email
-      if (foundInquiry.email !== customerEmail) {
+      // ✅ FIX: Use ticket data if customer data is missing
+      const finalCustomerEmail = email || foundInquiry.email;
+      const finalCustomerName = name || `${foundInquiry.firstName || ''} ${foundInquiry.lastName || ''}`.trim() || 'Customer';
+      
+      // Verify customer email matches ticket email (only if provided)
+      if (email && foundInquiry.email !== email) {
         return res.status(403).json({ error: "Email does not match ticket" });
       }
       
@@ -600,8 +605,8 @@ ReconFY Support Team
       const customerReply = {
         id: `${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
         message: message,
-        customerEmail: customerEmail,
-        customerName: customerName,
+        customerEmail: finalCustomerEmail,
+        customerName: finalCustomerName,
         timestamp: new Date().toISOString()
       };
       
@@ -626,7 +631,7 @@ ReconFY Support Team
           const adminNotificationBody = `
 A customer has replied to ticket ${ticketNumber}:
 
-Customer: ${customerName} (${customerEmail})
+Customer: ${finalCustomerName} (${finalCustomerEmail})
 Message: ${message}
 
 Please review and respond in the admin dashboard.
