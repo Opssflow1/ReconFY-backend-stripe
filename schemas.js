@@ -56,7 +56,19 @@ export const expenseCategorySchema = Joi.object({
     .messages({ 'string.min': 'Category name is required' })
 });
 
-// User validation schema
+// Signup user validation schema (for public signup)
+export const signupUserSchema = Joi.object({
+  id: Joi.string().min(1).max(100).required()
+    .messages({ 'string.min': 'User ID is required' }),
+  email: Joi.string().email().required()
+    .messages({ 'string.email': 'Please enter a valid email address' }),
+  company: Joi.string().min(1).max(100).optional()
+    .messages({ 'string.min': 'Company name must be at least 1 character' }),
+  acceptTerms: Joi.boolean().optional()
+    .messages({ 'boolean.base': 'Terms acceptance must be true or false' })
+});
+
+// Admin user validation schema (for admin user creation)
 export const userSchema = Joi.object({
   email: Joi.string().email().required(),
   firstName: Joi.string().min(1).max(50).required(),

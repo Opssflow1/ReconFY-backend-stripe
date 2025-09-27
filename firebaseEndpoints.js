@@ -9,7 +9,7 @@ import firebaseHandler from './firebaseHandler.js';
 import { requireActiveSubscription } from './subscriptionAuth.js';
 import { requireAuth, adminProtected } from './middleware/stacks.js';
 import Joi from 'joi';
-import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema, userAnalyticsDataSchema, countBodySchema, activityHistoryBodySchema, usageUpdateBodySchema, userSchema } from './schemas.js';
+import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema, userAnalyticsDataSchema, countBodySchema, activityHistoryBodySchema, usageUpdateBodySchema, userSchema, signupUserSchema } from './schemas.js';
 import { validateBody, validateParams } from './middleware/validation.js';
 
 const router = express.Router();
@@ -20,7 +20,7 @@ const router = express.Router();
 // --- PUBLIC ENDPOINTS (No authentication required) ---
 
 // Create user (public - no authentication required)
-router.post('/users', validateBody(userSchema), async (req, res) => {
+router.post('/users', validateBody(signupUserSchema), async (req, res) => {
   try {
     const userData = req.body;
     const result = await firebaseHandler.createUser(userData);
