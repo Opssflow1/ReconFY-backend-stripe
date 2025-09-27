@@ -619,16 +619,18 @@ class FirebaseHandler {
   }
 
   // Delete a location (hard delete - removes from database, analytics, expenses, and S3 files)
-  async deleteLocation(userId, locationId) {
+  async deleteLocation(userId, locationId, options = {}) {
     try {
-      // Check if user can remove locations
-      const userSubscription = await this.getUserSubscription(userId);
-      const currentLocations = await this.getUserLocations(userId);
-      const canRemove = currentLocations.length > this.getLocationLimits(userSubscription.tier).min;
-      
-      if (!canRemove) {
-        const limits = this.getLocationLimits(userSubscription.tier);
-        throw new Error(`You must maintain at least ${limits.min} location(s) for your ${limits.name} plan.`);
+      // Check if user can remove locations (skip for admin deletions)
+      if (!options.skipLimitCheck) {
+        const userSubscription = await this.getUserSubscription(userId);
+        const currentLocations = await this.getUserLocations(userId);
+        const canRemove = currentLocations.length > this.getLocationLimits(userSubscription.tier).min;
+        
+        if (!canRemove) {
+          const limits = this.getLocationLimits(userSubscription.tier);
+          throw new Error(`You must maintain at least ${limits.min} location(s) for your ${limits.name} plan.`);
+        }
       }
 
       // Get location details before deletion for cleanup

@@ -190,7 +190,7 @@ setInterval(async () => {
   if (!db) return;
   
   try {
-    const now = Date.now();
+  const now = Date.now();
     
     // ✅ OPTIMIZATION FIX: Batch cleanup operations for better performance
     const batchUpdates = {};
@@ -201,7 +201,7 @@ setInterval(async () => {
     if (otpSnapshot.exists()) {
       const otps = otpSnapshot.val();
       for (const [encodedEmail, data] of Object.entries(otps)) {
-        if (now > data.expiresAt) {
+    if (now > data.expiresAt) {
           // ✅ BATCH OPERATION: Add to batch updates instead of individual deletes
           batchUpdates[`otpCodes/${encodedEmail}`] = null; // null = delete
           cleanedCount++;
@@ -214,7 +214,7 @@ setInterval(async () => {
     if (sessionSnapshot.exists()) {
       const sessions = sessionSnapshot.val();
       for (const [token, data] of Object.entries(sessions)) {
-        if (now > data.expiresAt) {
+    if (now > data.expiresAt) {
           // ✅ BATCH OPERATION: Add to batch updates instead of individual deletes
           batchUpdates[`otpSessions/${token}`] = null; // null = delete
           cleanedCount++;
@@ -337,9 +337,9 @@ export function setupOTPRoutes(app, { sesClient, db: database }) {
           }
           
           const remainingAttempts = updatedOTP.maxAttempts - updatedOTP.attempts;
-          
-          return res.status(400).json({ 
-            error: 'Invalid OTP',
+        
+        return res.status(400).json({ 
+          error: 'Invalid OTP',
             message: `Incorrect code. ${remainingAttempts} attempts remaining`
           });
         } catch (error) {
@@ -462,10 +462,10 @@ export function setupOTPRoutes(app, { sesClient, db: database }) {
       if (otpSnapshot.exists()) {
         const otps = otpSnapshot.val();
         for (const [encodedEmail, data] of Object.entries(otps)) {
-          if (now > data.expiresAt) {
+        if (now > data.expiresAt) {
             // ✅ BATCH OPERATION: Add to batch updates instead of individual deletes
             batchUpdates[`otpCodes/${encodedEmail}`] = null; // null = delete
-            cleanedOTPs++;
+          cleanedOTPs++;
           }
         }
       }
@@ -475,11 +475,11 @@ export function setupOTPRoutes(app, { sesClient, db: database }) {
       if (sessionSnapshot.exists()) {
         const sessions = sessionSnapshot.val();
         for (const [token, data] of Object.entries(sessions)) {
-          if (now > data.expiresAt) {
+        if (now > data.expiresAt) {
             // ✅ BATCH OPERATION: Add to batch updates instead of individual deletes
             batchUpdates[`otpSessions/${token}`] = null; // null = delete
-            cleanedSessions++;
-          }
+          cleanedSessions++;
+        }
         }
       }
       

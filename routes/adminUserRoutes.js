@@ -92,7 +92,7 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
     try {
       const { userId, locationId } = req.params;
       
-      // Step 1: Get location details for analytics cleanup
+      // Get location details before deletion for audit logging
       const locationSnap = await db.ref(`users/${userId}/locations/${locationId}`).once('value');
       if (!locationSnap.exists()) {
         return res.status(404).json({ error: 'Location not found' });
@@ -101,45 +101,19 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
       const location = locationSnap.val();
       const tspId = location.tspId;
       
-      // Step 2: Delete associated analytics for this location
-      const analyticsSnap = await db.ref(`analytics/${userId}`).once('value');
-      let deletedAnalyticsCount = 0;
+      // ✅ FIX: Use comprehensive deletion logic (same as user deletion)
+      // Import firebaseHandler to use the complete deletion method
+      const firebaseHandlerModule = await import('../firebaseHandler.js');
+      const firebaseHandler = firebaseHandlerModule.default;
       
-      if (analyticsSnap.exists()) {
-        const analytics = analyticsSnap.val();
-        const analyticsToDelete = [];
-        
-        // Find analytics that reference this location or TSP ID
-        Object.entries(analytics).forEach(([analyticsId, analyticsData]) => {
-          const shouldDelete = 
-            (analyticsData.locationIds && analyticsData.locationIds.includes(locationId)) ||
-            (analyticsData.tspIds && analyticsData.tspIds.includes(tspId)) ||
-            (analyticsData.primaryLocationId === locationId) ||
-            (analyticsData.primaryTspId === tspId);
-          
-          if (shouldDelete) {
-            analyticsToDelete.push(analyticsId);
-          }
-        });
-        
-        // ✅ TRANSACTION FIX: Use batch operation for atomic deletion
-        if (analyticsToDelete.length > 0) {
-          const updates = {};
-          analyticsToDelete.forEach(analyticsId => {
-            updates[`analytics/${userId}/${analyticsId}`] = null; // null = delete
-          });
-          
-          await db.ref().update(updates);
-          deletedAnalyticsCount = analyticsToDelete.length;
-          console.log(`[TRANSACTION] Deleted ${deletedAnalyticsCount} analytics for location ${locationId}`);
-        }
-      }
-      
-      // ✅ TRANSACTION FIX: Use batch operation for atomic deletion
-      const locationUpdates = {};
-      locationUpdates[`users/${userId}/locations/${locationId}`] = null; // null = delete
-      
-      await db.ref().update(locationUpdates);
+      // Use the comprehensive deleteLocation method that handles:
+      // - Analytics deletion
+      // - Expenses deletion  
+      // - Monthly summaries deletion
+      // - S3 files deletion
+      // - Location record deletion
+      // ✅ ADMIN FIX: Skip subscription limit checks for admin deletions
+      const deletionResult = await firebaseHandler.deleteLocation(userId, locationId, { skipLimitCheck: true });
       
       // Fetch user root to include email in audit target
       let userEmail = null;
@@ -150,16 +124,23 @@ export const setupAdminUserRoutes = (app, { db, auditLogger, cognitoClient, stri
         userEmail = null;
       }
       
-      await logUserLocationDeleted(auditLogger, { req, userId, userEmail, locationId, tspId, before: location });
+      // Log the comprehensive deletion for audit
+      await logUserLocationDeleted(auditLogger, { 
+        req, 
+        userId, 
+        userEmail, 
+        locationId, 
+        tspId, 
+        before: location 
+      });
       
       res.json({
         success: true,
-        message: 'Location and associated analytics deleted successfully',
+        message: 'Location and all associated data deleted successfully',
         details: {
-          locationId,
-          tspId,
-          deletedAnalyticsCount,
-          adminUser: req.user.sub
+          ...deletionResult.details,
+          adminUser: req.user.sub,
+          deletionType: 'admin_comprehensive'
         }
       });
       
