@@ -9,7 +9,7 @@ import firebaseHandler from './firebaseHandler.js';
 import { requireActiveSubscription } from './subscriptionAuth.js';
 import { requireAuth, adminProtected } from './middleware/stacks.js';
 import Joi from 'joi';
-import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema } from './schemas.js';
+import { expenseSchema, monthlySummarySchema, expenseImportSchema, expenseCategorySchema, userIdParamSchema, userAndLocationParamSchema, userLocMonthParamSchema, userLocMonthExpenseParamSchema, userTspParamSchema, userAnalyticsDataSchema, countBodySchema, activityHistoryBodySchema, usageUpdateBodySchema, userSchema } from './schemas.js';
 import { validateBody, validateParams } from './middleware/validation.js';
 
 const router = express.Router();
@@ -20,13 +20,13 @@ const router = express.Router();
 // --- PUBLIC ENDPOINTS (No authentication required) ---
 
 // Create user (public - no authentication required)
-router.post('/users', async (req, res) => {
+router.post('/users', validateBody(userSchema), async (req, res) => {
   try {
     const userData = req.body;
     const result = await firebaseHandler.createUser(userData);
     res.status(201).json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to create user' });
   }
 });
 
@@ -47,26 +47,26 @@ router.get('/user-analytics/:userId', validateParams(userIdParamSchema), async (
 });
 
 // Set user analytics data
-router.post('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId', validateParams(userIdParamSchema), validateBody(userAnalyticsDataSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const data = req.body;
     const result = await firebaseHandler.setUserAnalyticsData(userId, data);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update analytics data' });
   }
 });
 
 // Update user analytics data
-router.patch('/user-analytics/:userId', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.patch('/user-analytics/:userId', validateParams(userIdParamSchema), validateBody(userAnalyticsDataSchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const data = req.body;
     const result = await firebaseHandler.updateUserAnalyticsData(userId, data);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update analytics data' });
   }
 });
 
@@ -82,14 +82,14 @@ router.get('/user-analytics/:userId/analyses-count', validateParams(userIdParamS
 });
 
 // Set analyses count
-router.post('/user-analytics/:userId/analyses-count', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/analyses-count', validateParams(userIdParamSchema), validateBody(countBodySchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { count } = req.body;
     const result = await firebaseHandler.setAnalysesCount(userId, count);
     res.json({ count: result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update analyses count' });
   }
 });
 
@@ -105,14 +105,14 @@ router.get('/user-analytics/:userId/files-processed', validateParams(userIdParam
 });
 
 // Set files processed count
-router.post('/user-analytics/:userId/files-processed', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/files-processed', validateParams(userIdParamSchema), validateBody(countBodySchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { count } = req.body;
     const result = await firebaseHandler.setFilesProcessed(userId, count);
     res.json({ count: result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update files processed count' });
   }
 });
 
@@ -128,14 +128,14 @@ router.get('/user-analytics/:userId/activity-history', validateParams(userIdPara
 });
 
 // Set activity history
-router.post('/user-analytics/:userId/activity-history', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/activity-history', validateParams(userIdParamSchema), validateBody(activityHistoryBodySchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { history } = req.body;
     const result = await firebaseHandler.setActivityHistory(userId, history);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update activity history' });
   }
 });
 
@@ -151,14 +151,14 @@ router.get('/user-analytics/:userId/session-key', validateParams(userIdParamSche
 });
 
 // Set user session key
-router.post('/user-analytics/:userId/session-key', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.post('/user-analytics/:userId/session-key', validateParams(userIdParamSchema), validateBody(Joi.object({ sessionKey: Joi.string().max(1000).required() })), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const { sessionKey } = req.body;
     const result = await firebaseHandler.setUserSessionKey(userId, sessionKey);
     res.json({ sessionKey: result });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update session key' });
   }
 });
 
@@ -191,14 +191,14 @@ router.get('/users', ...adminProtected, async (req, res) => {
 // --- SUBSCRIPTION OPERATIONS ENDPOINTS ---
 
 // Update usage
-router.patch('/users/:userId/usage', validateParams(userIdParamSchema), requireActiveSubscription, async (req, res) => {
+router.patch('/users/:userId/usage', validateParams(userIdParamSchema), validateBody(usageUpdateBodySchema), requireActiveSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const usageData = req.body;
     const result = await firebaseHandler.updateUsage(userId, usageData);
     res.json(result);
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to update usage data' });
   }
 });
 

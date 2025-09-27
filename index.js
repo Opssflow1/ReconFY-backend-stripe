@@ -84,8 +84,8 @@ const proxyToProcessingBackend = async (req, res, endpoint) => {
     const requestConfig = {
       headers,
       timeout: 120000, // 2 minutes timeout for file processing
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
+      maxContentLength: 50 * 1024 * 1024, // 50MB limit
+      maxBodyLength: 50 * 1024 * 1024 // 50MB limit
     };
 
     // Handle different request methods

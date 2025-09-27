@@ -582,3 +582,30 @@ export const otpVerifySchema = Joi.object({
       'any.required': 'OTP code is required'
     })
 });
+
+// ============================================================================
+// ADDITIONAL VALIDATION SCHEMAS FOR SECURITY FIXES
+// ============================================================================
+
+// User analytics data validation
+export const userAnalyticsDataSchema = Joi.object({
+  sessionKey: Joi.string().max(1000).optional(),
+  activityHistory: Joi.array().items(Joi.object({
+    action: Joi.string().max(100).required(),
+    timestamp: Joi.string().isoDate().required(),
+    details: Joi.object().optional()
+  })).max(1000).optional(),
+  analysesCount: Joi.number().integer().min(0).max(10000).optional(),
+  filesProcessed: Joi.number().integer().min(0).max(10000).optional(),
+  usage: Joi.object({
+    monthlyAnalyses: Joi.number().integer().min(0).max(1000).optional(),
+    fileUploads: Joi.number().integer().min(0).max(1000).optional(),
+    apiCalls: Joi.number().integer().min(0).max(10000).optional()
+  }).optional()
+});
+
+// Count validation schema (using existing pattern)
+export const countBodySchema = Joi.object({
+  count: Joi.number().integer().min(0).max(10000).required()
+    .messages({ 'number.base': 'Count must be a number', 'number.integer': 'Count must be a whole number', 'number.min': 'Count must be at least 0', 'number.max': 'Count cannot exceed 10000' })
+});
