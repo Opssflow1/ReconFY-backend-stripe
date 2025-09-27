@@ -7,7 +7,6 @@ import { otpSendSchema, otpVerifySchema } from "../schemas.js";
 import { authLimiter } from "../middleware/rateLimiting.js";
 import { validateBody } from "../middleware/validation.js";
 import { sendEmail, sendOTPEmail } from "../utils/emailUtils.js";
-import { logOTPSent, logOTPVerified, logOTPFailed } from "../utils/otpAuditUtils.js";
 
 // OTP storage (in production, use Redis)
 const otpStore = new Map();
@@ -59,10 +58,9 @@ setInterval(() => {
  * Setup OTP routes for the Express app
  * @param {Object} app - Express app instance
  * @param {Object} dependencies - Required dependencies
- * @param {Object} dependencies.auditLogger - Audit logger instance
  * @param {Object} dependencies.sesClient - AWS SES client
  */
-export function setupOTPRoutes(app, { auditLogger, sesClient }) {
+export function setupOTPRoutes(app, { sesClient }) {
   
   // Send OTP endpoint
   app.post("/otp/send", authLimiter, validateBody(otpSendSchema), async (req, res) => {
@@ -97,13 +95,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       const emailBody = OTP_EMAIL_TEMPLATE.body(otp, 10);
       await sendOTPEmail(sesClient, email, OTP_EMAIL_TEMPLATE.subject, emailBody);
       
-      // Log OTP sent
-      await logOTPSent(auditLogger, {
-        email,
-        ipAddress: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-      
       res.json({ 
         success: true, 
         message: 'OTP sent successfully to your email',
@@ -112,14 +103,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       
     } catch (error) {
       console.error('Error sending OTP:', error);
-      
-      // Log OTP send failure
-      await logOTPFailed(auditLogger, {
-        email: req.body.email,
-        reason: 'send_failed',
-        error: error.message,
-        ipAddress: req.ip
-      });
       
       res.status(500).json({ 
         error: 'Failed to send OTP', 
@@ -136,12 +119,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       // Get stored OTP
       const storedOTP = otpStore.get(email);
       if (!storedOTP) {
-        await logOTPFailed(auditLogger, {
-          email,
-          reason: 'otp_not_found',
-          ipAddress: req.ip
-        });
-        
         return res.status(400).json({ 
           error: 'OTP not found or expired',
           message: 'Please request a new OTP'
@@ -151,12 +128,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       // Check expiration
       if (Date.now() > storedOTP.expiresAt) {
         otpStore.delete(email);
-        
-        await logOTPFailed(auditLogger, {
-          email,
-          reason: 'otp_expired',
-          ipAddress: req.ip
-        });
         
         return res.status(400).json({ 
           error: 'OTP expired',
@@ -168,12 +139,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       if (storedOTP.attempts >= storedOTP.maxAttempts) {
         otpStore.delete(email);
         
-        await logOTPFailed(auditLogger, {
-          email,
-          reason: 'max_attempts_exceeded',
-          ipAddress: req.ip
-        });
-        
         return res.status(400).json({ 
           error: 'Too many attempts',
           message: 'Please request a new OTP'
@@ -183,13 +148,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       // Verify OTP
       if (storedOTP.otp !== otp) {
         storedOTP.attempts++;
-        
-        await logOTPFailed(auditLogger, {
-          email,
-          reason: 'invalid_otp',
-          attempts: storedOTP.attempts,
-          ipAddress: req.ip
-        });
         
         return res.status(400).json({ 
           error: 'Invalid OTP',
@@ -211,13 +169,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       // Clean up OTP
       otpStore.delete(email);
       
-      // Log successful verification
-      await logOTPVerified(auditLogger, {
-        email,
-        ipAddress: req.ip,
-        userAgent: req.get('User-Agent')
-      });
-      
       res.json({ 
         success: true, 
         message: 'OTP verified successfully',
@@ -227,13 +178,6 @@ export function setupOTPRoutes(app, { auditLogger, sesClient }) {
       
     } catch (error) {
       console.error('Error verifying OTP:', error);
-      
-      await logOTPFailed(auditLogger, {
-        email: req.body.email,
-        reason: 'verification_failed',
-        error: error.message,
-        ipAddress: req.ip
-      });
       
       res.status(500).json({ 
         error: 'Failed to verify OTP', 

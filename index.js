@@ -546,7 +546,6 @@ setupWebhookRoutes(app, {
 
 // ✅ OTP ROUTES: Setup secure OTP authentication endpoints
 setupOTPRoutes(app, { 
-  auditLogger, 
   sesClient 
 });
 
