@@ -555,3 +555,30 @@ export const subscriptionValidateQuerySchema = Joi.object({
       'number.min': 'Location count must be at least 0'
     })
 });
+
+// ============================================================================
+// OTP VALIDATION SCHEMAS
+// ============================================================================
+
+// OTP send request schema
+export const otpSendSchema = Joi.object({
+  email: Joi.string().email().required()
+    .messages({
+      'string.email': 'Please enter a valid email address',
+      'any.required': 'Email address is required'
+    })
+});
+
+// OTP verify request schema
+export const otpVerifySchema = Joi.object({
+  email: Joi.string().email().required()
+    .messages({
+      'string.email': 'Please enter a valid email address',
+      'any.required': 'Email address is required'
+    }),
+  otp: Joi.string().pattern(/^\d{6}$/).required()
+    .messages({
+      'string.pattern.base': 'OTP must be a 6-digit number',
+      'any.required': 'OTP code is required'
+    })
+});

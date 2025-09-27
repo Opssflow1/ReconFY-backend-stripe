@@ -45,6 +45,7 @@ TZ=UTC
 | Variable | Type | Required | Description |
 |----------|------|----------|-------------|
 | `SES_FROM_EMAIL` | string | ✅ | Verified email address for sending notifications |
+| `SES_OTP_FROM_EMAIL` | string | ❌ | Dedicated email address for OTP emails (optional, falls back to SES_FROM_EMAIL) |
 
 **Example:**
 ```bash
@@ -62,6 +63,7 @@ S3_BUCKET_NAME=your-bucket-name-here
 
 # AWS SES
 SES_FROM_EMAIL=noreply@yourdomain.com
+SES_OTP_FROM_EMAIL=otp@yourdomain.com
 ```
 
 ### Firebase Configuration

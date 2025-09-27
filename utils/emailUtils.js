@@ -102,3 +102,37 @@ export function generateTicketNumber() {
   const random = Math.random().toString(36).substring(2, 8);
   return `TKT-${timestamp}-${random}`.toUpperCase();
 }
+
+// Dedicated function for sending OTP emails
+export async function sendOTPEmail(sesClient, toEmail, subject, body) {
+  try {
+    // Use dedicated OTP email address from environment variable
+    const fromAddress = process.env.SES_OTP_FROM_EMAIL || process.env.SES_FROM_EMAIL || 'noreply@opssflow.com';
+    
+    const command = new SendEmailCommand({
+      Source: fromAddress,
+      Destination: {
+        ToAddresses: [toEmail],
+      },
+      Message: {
+        Subject: {
+          Data: subject,
+          Charset: 'UTF-8',
+        },
+        Body: {
+          Text: {
+            Data: body,
+            Charset: 'UTF-8',
+          },
+        },
+      },
+    });
+
+    const result = await sesClient.send(command);
+    console.log('OTP Email sent successfully:', result.MessageId);
+    return result;
+  } catch (error) {
+    console.error('Error sending OTP email:', error);
+    throw error;
+  }
+}

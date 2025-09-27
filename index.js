@@ -31,6 +31,7 @@ import { setupAdminRoutes } from "./routes/adminRoutes.js";
 import { setupFirebaseExpenseRoutes } from "./routes/firebaseExpenseRoutes.js";
 import { setupProxyRoutes } from "./routes/proxyRoutes.js";
 import { setupWebhookRoutes } from "./routes/webhookRoutes.js";
+import { setupOTPRoutes } from "./routes/otpRoutes.js";
 import firebaseEndpoints from "./firebaseEndpoints.js";
 import firebaseHandler from "./firebaseHandler.js";
 import helmet from "helmet";
@@ -205,6 +206,11 @@ const requiredEnvVars = [
   'AUDIT_ENCRYPTION_KEY'
 ];
 
+// Optional environment variables (with fallbacks)
+const optionalEnvVars = [
+  'SES_OTP_FROM_EMAIL' // Optional: dedicated OTP email address
+];
+
 const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
 
 if (missingEnvVars.length > 0) {
@@ -346,7 +352,7 @@ const uploadMultiple = multer({
     }
   },
   limits: {
-    fileSize: 3 * 1024 * 1024 * 1024, // 3GB limit per file
+    fileSize: 30 * 1024 * 1024, // 30MB limit per file
     files: 30 // Allow up to 30 files per request
   }
 });
@@ -536,6 +542,12 @@ setupWebhookRoutes(app, {
   webhookProcessingUtils, 
   updateUserSubscription, 
   auditLogger 
+});
+
+// ✅ OTP ROUTES: Setup secure OTP authentication endpoints
+setupOTPRoutes(app, { 
+  auditLogger, 
+  sesClient 
 });
 
 // ✅ ERROR HANDLING FIX: Comprehensive error handling middleware with circuit breakers
