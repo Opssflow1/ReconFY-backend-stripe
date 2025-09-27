@@ -14,18 +14,12 @@ const sessionStore = new Map();
 
 // OTP email template
 const OTP_EMAIL_TEMPLATE = {
-  subject: "Your OTP Code - ReconFY",
+  subject: "Your ReconFY verification code",
   body: (otp, expiresInMinutes) => `
-Hello,
-
-Your OTP code for ReconFY login is: ${otp}
-
-This code will expire in ${expiresInMinutes} minutes.
-
-If you did not request this code, please ignore this email.
+Your ReconFY verification code is ${otp}. This code will expire shortly for security purposes. If you didn't request this code, please ignore this email.
 
 Best regards,
-ReconFY Team
+The ReconFY Team
   `.trim()
 };
 
@@ -92,7 +86,7 @@ export function setupOTPRoutes(app, { sesClient }) {
       });
       
       // Send OTP email using dedicated OTP email function
-      const emailBody = OTP_EMAIL_TEMPLATE.body(otp, 10);
+      const emailBody = OTP_EMAIL_TEMPLATE.body(otp);
       await sendOTPEmail(sesClient, email, OTP_EMAIL_TEMPLATE.subject, emailBody);
       
       res.json({ 
