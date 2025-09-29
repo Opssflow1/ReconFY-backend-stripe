@@ -68,37 +68,6 @@ export const signupUserSchema = Joi.object({
     .messages({ 'boolean.base': 'Terms acceptance must be true or false' })
 });
 
-// Admin user validation schema (for admin user creation)
-export const userSchema = Joi.object({
-  email: Joi.string().email().required(),
-  firstName: Joi.string().min(1).max(50).required(),
-  lastName: Joi.string().min(1).max(50).required(),
-  role: Joi.string().valid('customer', 'admin', 'owner').required(),
-  companyName: Joi.string().min(1).max(100).optional(),
-  phoneNumber: Joi.string().min(10).max(15).optional(),
-  address: Joi.object({
-    street: Joi.string().max(100).optional(),
-    city: Joi.string().max(50).optional(),
-    state: Joi.string().max(50).optional(),
-    zipCode: Joi.string().max(10).optional(),
-    country: Joi.string().max(50).optional()
-  }).optional(),
-  preferences: Joi.object({
-    notifications: Joi.boolean().default(true),
-    theme: Joi.string().valid('light', 'dark').default('light'),
-    timezone: Joi.string().default('UTC')
-  }).optional(),
-  subscription: Joi.object({
-    plan: Joi.string().valid('starter', 'growth', 'pro', 'enterprise').required(),
-    status: Joi.string().valid('active', 'inactive', 'cancelled', 'past_due').required(),
-    currentPeriodStart: Joi.date().required(),
-    currentPeriodEnd: Joi.date().required()
-  }).optional(),
-  locations: Joi.array().items(Joi.string()).optional(),
-  tspIds: Joi.array().items(Joi.string()).optional(),
-  primaryLocationId: Joi.string().optional(),
-  primaryTspId: Joi.string().optional()
-});
 
 // ============================================================================
 // API VALIDATION SCHEMAS

@@ -42,7 +42,6 @@ import { globalLimiter, authLimiter, contactLimiter, webhookLimiter, adminLimite
 import { 
   expenseSchema, 
   monthlySummarySchema, 
-  userSchema,
   userIdSchema, 
   subscriptionSchema, 
   checkoutSessionSchema, 

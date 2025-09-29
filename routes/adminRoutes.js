@@ -23,12 +23,10 @@ export const setupAdminRoutes = (app, {
   // ✅ S3 CLEANUP: Monitor orphaned files endpoint
   app.get('/admin/orphaned-files', ...adminProtected, async (req, res) => {
     try {
-      // Only allow admin users to access this endpoint
-      const { sub: userId } = req.user;
-      const user = await firebaseHandler.getUser(userId);
-      
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied: Admin role required' });
+      // Admin group check (Cognito 'Admins' group)
+      const groups = req.user["cognito:groups"] || [];
+      if (!groups.includes("Admins")) {
+        return res.status(403).json({ error: "Forbidden: Admins only" });
       }
 
       const stats = orphanedFilesTracker.getStats();
@@ -646,12 +644,10 @@ export const setupAdminRoutes = (app, {
   // ✅ TRIAL EXPIRY: Get scheduler status
   app.get('/admin/trial-expiry-status', ...adminProtected, async (req, res) => {
     try {
-      // Only allow admin users to access this endpoint
-      const { sub: userId } = req.user;
-      const user = await firebaseHandler.getUser(userId);
-      
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied: Admin role required' });
+      // Admin group check (Cognito 'Admins' group)
+      const groups = req.user["cognito:groups"] || [];
+      if (!groups.includes("Admins")) {
+        return res.status(403).json({ error: "Forbidden: Admins only" });
       }
 
       const status = trialExpiryScheduler ? trialExpiryScheduler.getStatus() : null;
@@ -670,12 +666,10 @@ export const setupAdminRoutes = (app, {
   // ✅ TRIAL EXPIRY: Manual trigger for trial expiry check
   app.post('/admin/trigger-trial-expiry', ...adminProtected, async (req, res) => {
     try {
-      // Only allow admin users to trigger this
-      const { sub: userId } = req.user;
-      const user = await firebaseHandler.getUser(userId);
-      
-      if (!user || user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied: Admin role required' });
+      // Admin group check (Cognito 'Admins' group)
+      const groups = req.user["cognito:groups"] || [];
+      if (!groups.includes("Admins")) {
+        return res.status(403).json({ error: "Forbidden: Admins only" });
       }
 
       if (!trialExpiryScheduler) {
